@@ -35,21 +35,14 @@ namespace MapFileUI
         int _MaxItems = 100000;
 
         List<int> _mylist = new List<int>();
-        Hashtable _myhashTable = new Hashtable();
         public MainWindow()
         {
             InitializeComponent();
-            for (int i = 0; i < 100; i++)
-            {
-                _mylist.Add(i);
-                _myhashTable.Add(i, i);
-            }
 
             _uiThread = Thread.CurrentThread.ManagedThreadId;
             this.Closed += (oC, eC) =>
                 {
                     _runningCode = false;
-                    CloseDict();
                 };
             //*
             this.Top = 0;
@@ -85,6 +78,7 @@ namespace MapFileUI
                             AcceptsReturn = true,
                             AcceptsTab = true,
                             IsReadOnly = true,
+                            FontFamily=new FontFamily("Consolas"),
                             VerticalScrollBarVisibility = ScrollBarVisibility.Auto
                         };
                         spVert.Children.Add(_txtboxStatus);
@@ -173,6 +167,7 @@ namespace MapFileUI
                                     _btnStartStop.Content = "_Start";
                                     chkDoDeletes.IsEnabled = true;
                                     chkUseMapFile.IsEnabled = true;
+                                    GC.Collect();
                                     _runningCode = false;
                                 }
 

@@ -64,44 +64,44 @@ namespace MapFileDictTest
                 }
                 else
                     if (int1 != right.int1)
+                {
+                    IsEqual = false;
+                }
+                else if (uint2 != right.uint2)
+                {
+                    IsEqual = false;
+                }
+                else if (long3 != right.long3)
+                {
+                    IsEqual = false;
+                }
+                else if (ulong4 != right.ulong4)
+                {
+                    IsEqual = false;
+                }
+                else if (float7 != right.float7)
+                {
+                    IsEqual = false;
+                }
+                else if (double8 != right.double8)
+                {
+                    IsEqual = false;
+                }
+                else if (dt9 != right.dt9)
+                {
+                    IsEqual = false;
+                }
+                else
+                {
+                    if (str5 == null ^ right.str5 == null)
                     {
                         IsEqual = false;
                     }
-                    else if (uint2 != right.uint2)
+                    if (str5 != right.str5)
                     {
                         IsEqual = false;
                     }
-                    else if (long3 != right.long3)
-                    {
-                        IsEqual = false;
-                    }
-                    else if (ulong4 != right.ulong4)
-                    {
-                        IsEqual = false;
-                    }
-                    else if (float7 != right.float7)
-                    {
-                        IsEqual = false;
-                    }
-                    else if (double8 != right.double8)
-                    {
-                        IsEqual = false;
-                    }
-                    else if (dt9 != right.dt9)
-                    {
-                        IsEqual = false;
-                    }
-                    else
-                    {
-                        if (str5 == null ^ right.str5 == null)
-                        {
-                            IsEqual = false;
-                        }
-                        if (str5 != right.str5)
-                        {
-                            IsEqual = false;
-                        }
-                    }
+                }
                 return IsEqual;
             }
             public override int GetHashCode()
@@ -299,7 +299,7 @@ namespace MapFileDictTest
             // 2 gigs takes roughly 4 minutes
 
             nInst = 5999470;
-            DoIt(nInst, 1);
+            DoIt(nInst, nLoops: 1);
         }
         [TestMethod]
         public void UseFile()
