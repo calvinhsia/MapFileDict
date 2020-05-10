@@ -149,10 +149,10 @@ namespace MapFileUI
                                     }
                                     else
                                     {
-                                        DoWork(_mfd, (int ndx) =>
+                                        DoWork(_mfd, (int i) =>
                                                 {
-                                                    var i = _mfd.Count == 0 ? 0 : (ndx % _mfd.Count);
-                                                    i = ndx;
+                                                    //var i = _mfd.Count == 0 ? 0 : (ndx % _mfd.Count);
+                                                    //i = ndx;
                                                     var rnd = _random.Next(strSize);
                                                     var test = new someclass() { int1 = i, str5 = new string('a', rnd) };
                                                     _mfd[i] = test;
@@ -217,6 +217,7 @@ namespace MapFileUI
                         //                    PerformanceCounter perfCounterGC = GetPerfCounterForVS(".NET CLR Memory", "# Gen 0 Collections", "ID Process", _procVS.Id);
                         while (_runningCode)
                         {
+                            GC.Collect();
                             for (int i = 0; _runningCode; i++)
                             {
                                 Work(i);
@@ -225,6 +226,7 @@ namespace MapFileUI
                                     _mfd.Clear();
                                     _nBytesAlloc = 0;
                                     LogStatus("Clearing");
+                                    GC.Collect();
                                     Thread.Sleep(1000);
                                     break;
                                 }
@@ -234,7 +236,7 @@ namespace MapFileUI
                                     float nGCStart = perfCounterGCBytes.NextValue();
                                     float nPrivByteStart = perfCounterPrivateBytes.NextValue();
                                     float nVirtByteStart = perfCounterVirtualBytes.NextValue();
-                                    var stat = string.Format("GCSize{0:n0}  PrivB{1:n0}  VirtB{2:n0} DictCnt{3:n0} Bytes{4:n0}",
+                                    var stat = string.Format("GCSize={0:n0}  PrivB={1:n0}  VirtB={2:n0} DictCnt={3:n0} Bytes={4:n0}",
                                         (int)nGCStart,
                                         (int)nPrivByteStart,
                                         (int)nVirtByteStart,

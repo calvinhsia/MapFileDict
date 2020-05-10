@@ -40,9 +40,9 @@ namespace MapFileDict
 
         MappingData _currentMapping; // can be null
 
-        internal stats _stats;
+        public stats _stats;
         [DebuggerDisplay("{ToString()}")]
-        internal struct stats
+        public struct stats
         {
             internal ulong _ulMapMemSize; // overall size of underlying mapping object
             internal ulong _ulOffsetFreeMem; // offset to next free available mem
