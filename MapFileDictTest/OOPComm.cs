@@ -4,6 +4,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.IO.MemoryMappedFiles;
 using System.IO.Pipes;
 using System.Linq;
 using System.Reflection;
@@ -41,29 +42,26 @@ namespace MapFileDictTest
         public async Task PipeTesting()
         {
             var sharedFileMapName = $"MapFileDict{Process.GetCurrentProcess().Id}\0";
-            var hSharedMem = NativeMethods.CreateFileMapping(
-                hFile: NativeMethods.INVALID_HANDLE_VALUE,
-                lpSecurityAttributes: IntPtr.Zero,
-                flProtect: NativeMethods.PAGE_READWRITE,
-                dwMaximumSizeHigh: 0,
-                dwMaximumSizeLow: 65536,
-                lpName: sharedFileMapName
+            var sharedMapSize = 65536U;
+            var mmf = MemoryMappedFile.CreateNew(
+                mapName: sharedFileMapName,
+                capacity: sharedMapSize,
+                access: MemoryMappedFileAccess.ReadWrite,
+                options: MemoryMappedFileOptions.None,
+                inheritability: HandleInheritability.None
                 );
-            if (hSharedMem ==IntPtr.Zero)
-            {
-                var xx = Marshal.GetLastWin32Error();
-            }
-            var mappedSection = NativeMethods.MapViewOfFile(
-                hFileMapping: hSharedMem,
-                dwDesiredAccess: NativeMethods.FILE_MAP_READ | NativeMethods.FILE_MAP_WRITE,
-                dwFileOffsetHigh: 0,
-                dwFileOffsetLow: 0,
-                dwNumberOfBytesToMap: 0
-                );
+            var mmfView = mmf.CreateViewAccessor(
+                offset: 0,
+                size: 0,
+                access: MemoryMappedFileAccess.ReadWrite);
+            var mappedSection = mmfView.SafeMemoryMappedViewHandle.DangerousGetHandle();
             await Task.Yield();
             var tcs = new TaskCompletionSource<object>();
             var cts = new CancellationTokenSource();
             var pipeName = "MyTestPipe";
+            var chunkSize = 1024 * 1024 * 1024;
+            var speedBuf = new byte[chunkSize];
+            Trace.WriteLine($"Mapped Section {mappedSection} 0x{mappedSection.ToInt32():x8}");
             var taskServer = Task.Run(async () =>
                 {
                     try
@@ -119,6 +117,12 @@ namespace MapFileDictTest
                                             var strB = Encoding.ASCII.GetBytes($"Server: {DateTime.Now}");
                                             await pipeServer.WriteAsync(strB, 0, strB.Length);
                                             break;
+                                        case Verbs.verbSpeedTest:
+                                            {
+                                                await pipeServer.ReadAsync(speedBuf, 0, chunkSize - 1);
+                                                Trace.WriteLine($"Server: got bytes {chunkSize:n0}");
+                                            }
+                                            break;
                                     }
                                 }
                             }
@@ -148,40 +152,55 @@ namespace MapFileDictTest
                 {
                     await pipeClient.ConnectAsync(cts.Token);
                     var verb = new byte[2] { 1, 1 };
-                    for (int i = 0; i < 10; i++)
+                    for (int i = 0; i < 5; i++)
                     {
                         {
-                            //var strBuf = Encoding.ASCII.GetBytes($"MessageString {i}");
-                            //var buf = new byte[strBuf.Length + 1];
-                            //buf[0] = (byte)Verbs.verbString;
-                            //Array.Copy(strBuf, 0, buf, 1, strBuf.Length);
-                            //Trace.WriteLine("Client: sending message");
-                            //await pipeClient.WriteAsync(buf, 0, buf.Length);
-                            //Trace.WriteLine($"Client: sent message..requesting data");
+                            var strBuf = Encoding.ASCII.GetBytes($"MessageString {i}");
+                            var buf = new byte[strBuf.Length + 1];
+                            buf[0] = (byte)Verbs.verbString;
+                            Array.Copy(strBuf, 0, buf, 1, strBuf.Length);
+                            Trace.WriteLine("Client: sending message");
+                            await pipeClient.WriteAsync(buf, 0, buf.Length);
+                            Trace.WriteLine($"Client: sent message..requesting data");
                         }
                         {
                             var strBuf = Encoding.ASCII.GetBytes($"StrSharedMem {i}");
                             verb[0] = (byte)Verbs.verbStringSharedMem;
                             Marshal.WriteInt32(mappedSection, strBuf.Length);
-                            Marshal.Copy(strBuf, 0, mappedSection+ IntPtr.Size, strBuf.Length);
+                            Marshal.Copy(strBuf, 0, mappedSection + IntPtr.Size, strBuf.Length);
                             await pipeClient.WriteAsync(verb, 0, 1);
                         }
                         {
-                            //verb[0] = (byte)Verbs.verbRequestData;
-                            //await pipeClient.WriteAsync(verb, 0, 1);
-                            //var bufReq = new byte[100];
-                            //var buflen = await pipeClient.ReadAsync(bufReq, 0, bufReq.Length);
-                            //var readStr = Encoding.ASCII.GetString(bufReq, 0, buflen);
-                            //Trace.WriteLine($"Client req data from server: {readStr}");
+                            verb[0] = (byte)Verbs.verbRequestData;
+                            await pipeClient.WriteAsync(verb, 0, 1);
+                            var bufReq = new byte[100];
+                            var buflen = await pipeClient.ReadAsync(bufReq, 0, bufReq.Length);
+                            var readStr = Encoding.ASCII.GetString(bufReq, 0, buflen);
+                            Trace.WriteLine($"Client req data from server: {readStr}");
                         }
                     }
+                    {
+                        // speedtest
+                        var nIter = 10;
+                        var bufSpeed = new byte[chunkSize];
+                        bufSpeed[0] = (byte)Verbs.verbSpeedTest;
+                        var sw = Stopwatch.StartNew();
+                        for (int iter = 0; iter < nIter; iter++)
+                        {
+                            Trace.WriteLine($"Sending chunk {iter}");
+                            await pipeClient.WriteAsync(bufSpeed, 0, bufSpeed.Length);
+                        }
+                        var bps = (double)chunkSize * nIter / sw.Elapsed.TotalSeconds;
+                        Trace.WriteLine($"BytesPerSec = {bps:n0}"); // 1.2 to 1.3 G/Sec
+                    }
+
                     Trace.WriteLine($"Client: sending quit");
                     verb[0] = (byte)Verbs.verbQuit;
                     await pipeClient.WriteAsync(verb, 0, 1);
                 }
             });
 
-            var tskDelay = Task.Delay(TimeSpan.FromSeconds(Debugger.IsAttached ? 3000 : 3));
+            var tskDelay = Task.Delay(TimeSpan.FromSeconds(Debugger.IsAttached ? 3000 : 10));
             await Task.WhenAny(new[] { tskDelay, taskServer });
             if (tskDelay.IsCompleted)
             {
@@ -189,11 +208,9 @@ namespace MapFileDictTest
                 cts.Cancel();
                 await taskServer;
             }
-            NativeMethods.UnmapViewOfFile(mappedSection);
-            NativeMethods.CloseHandle(hSharedMem);
+            mmfView.Dispose();
+            mmf.Dispose();
             Trace.WriteLine($"Done");
-
-
         }
         /// <summary>
         /// each verb is 1 byte, with 
@@ -202,7 +219,8 @@ namespace MapFileDictTest
         {
             verbQuit, // len =1 byte: 0 args
             verbString, // 
-            verbStringSharedMem, 
+            verbStringSharedMem,
+            verbSpeedTest,
             verbRequestData, // len = 1 byte: 0 args
             verbSendObjAndReferences, // a single obj and a list of it's references
         }
