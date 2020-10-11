@@ -29,7 +29,7 @@ namespace MapFileDict
                 );
             var args = $@"""{Assembly.GetAssembly(typeof(MyClassThatRunsIn32and64bit)).Location
                                }"" {nameof(MyClassThatRunsIn32and64bit)} {
-                                   nameof(MyClassThatRunsIn32and64bit.MyMainMethod)} ""{outputLogFile}"" ""Executing from 64 bit Asm"" ""64"" true";
+                                   nameof(MyClassThatRunsIn32and64bit.MyMainMethod)} ""{outputLogFile}"" ""Executing from 64 bit Asm"" ""64"" true 123 234";
             Trace.WriteLine($"args = {args}");
             var p64 = Process.Start(
                 asm64BitFile,
@@ -38,13 +38,13 @@ namespace MapFileDict
 //            File.Delete(asm64BitFile);
             var result = File.ReadAllText(outputLogFile);
         }
-        public static async Task MyMainMethod(string outLogFile, string desc, int intarg, bool boolarg)
+        public static async Task MyMainMethod(string outLogFile, string param1, string param2, string param3, string param4, string param5)
         {
             var sb = new StringBuilder();
             try
             {
-                sb.AppendLine($"\r\n  {desc} Executing {nameof(MyClassThatRunsIn32and64bit)}.{nameof(MyMainMethod)} Pid={Process.GetCurrentProcess().Id} {Process.GetCurrentProcess().MainModule.FileName}");
-                sb.AppendLine($"  IntPtr.Size = {IntPtr.Size} Intarg={intarg} BoolArg={boolarg}");
+                sb.AppendLine($"\r\n  Executing {nameof(MyClassThatRunsIn32and64bit)}.{nameof(MyMainMethod)} Pid={Process.GetCurrentProcess().Id} {Process.GetCurrentProcess().MainModule.FileName}");
+                sb.AppendLine($"  IntPtr.Size = {IntPtr.Size} param1={param1} param2 = {param2}   param3 ={param3} paream4 = {param4} param5 = {param5}");
                 if (IntPtr.Size == 8)
                 {
                     sb.AppendLine("  We're in 64 bit land!!!");
@@ -53,22 +53,12 @@ namespace MapFileDict
                 {
                     sb.AppendLine("  nothing exciting: 32 bit land");
                 }
-                long bytesAlloc = 0;
-                var lst = new List<byte[]>();
                 try
                 {
-                    var sizeToAlloc = 1024 * 1024;
-                    while (true)
-                    {
-                        var x = new byte[sizeToAlloc];
-                        lst.Add(x);
-                        bytesAlloc += sizeToAlloc;
-                    }
                 }
-                catch (OutOfMemoryException ex)
+                catch (Exception ex)
                 {
-                    lst = null;
-                    sb.AppendLine($" {ex.Message} after allocating {bytesAlloc / 1024.0 / 1024 / 1024:n2} gigs");
+                    sb.AppendLine($" {ex.ToString()}");
                 }
                 //                sb.AppendLine($"Allocated {numAllocated} Gigs");
             }
