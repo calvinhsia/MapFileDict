@@ -41,25 +41,66 @@ namespace MapFileDictTest
         {
             await Task.Yield();
             var consapp = "ConsoleAppTest.exe";
-            var proc = Process.Start(consapp);
+            var pidClient = Process.GetCurrentProcess().Id;
+            var procServer = Process.Start(consapp, $"{pidClient}");
+            Trace.WriteLine($"Client: started server {procServer.Id}");
             var sw = Stopwatch.StartNew();
-            while (!proc.HasExited)
+            var cts = new CancellationTokenSource();
+
+            using (var oop = new OutOfProc(pidClient, OOPOption.Out32bit, cts.Token))
+            {
+                using (var pipeClient = new NamedPipeClientStream(
+                    serverName: ".",
+                    pipeName: oop.pipeName,
+                    direction: PipeDirection.InOut,
+                    options: PipeOptions.Asynchronous))
+                {
+                    Trace.WriteLine($"Client: starting to connect");
+                    await pipeClient.ConnectAsync(cts.Token);
+                    Trace.WriteLine($"Client: connected");
+                    var verb = new byte[2] { 1, 1 };
+
+                    Trace.WriteLine($"Client: GetLog");
+                    verb[0] = (byte)Verbs.verbGetLog;
+                    await pipeClient.WriteAsync(verb, 0, 1);
+                    Trace.WriteLine($"Client: GotLog");
+                    await pipeClient.GetAckAsync();
+                    Trace.WriteLine($"Client: GotAsync");
+                    var logstrs = Marshal.PtrToStringAnsi(oop.mappedSection);
+                    Trace.WriteLine($"Got log from server\r\n" + logstrs);
+
+
+                    Trace.WriteLine($"Client: sending quit");
+                    verb[0] = (byte)Verbs.verbQuit;
+                    await pipeClient.WriteAsync(verb, 0, 1);
+                    await pipeClient.GetAckAsync();
+
+                }
+            }
+            while (!procServer.HasExited)
             {
                 Trace.WriteLine($"Waiting for cons app to exit");
-                await Task.Delay(TimeSpan.FromMilliseconds(100));
+                await Task.Delay(TimeSpan.FromMilliseconds(1000));
+                if (! Debugger.IsAttached && sw.Elapsed.TotalSeconds > 10)
+                {
+                    Trace.WriteLine($"Killing server process");
+                    procServer.Kill();
+                    break;
+                }
             }
-            Trace.WriteLine($"Cons app exited in {sw.Elapsed.TotalSeconds:n2}");
+            Trace.WriteLine($"Done in {sw.Elapsed.TotalSeconds:n2}");
         }
 
         [TestMethod]
         public async Task OOPTestInProc()
         {
-            using (var oop = new OutOfProc(OOPOption.InProc))
+            var cts = new CancellationTokenSource();
+            using (var oop = new OutOfProc(Process.GetCurrentProcess().Id, OOPOption.InProc, cts.Token))
             {
                 oop.SetChunkSize(1024 * 1024 * 1024);
                 Trace.WriteLine($"Mapped Section {oop.mappedSection} 0x{oop.mappedSection.ToInt32():x8}");
 
-                var taskServer = oop.CreateServer();
+                var taskServer = oop.CreateServerAsync();
 
                 var taskClient = DoTestClientAsync(oop);
                 var tskDelay = Task.Delay(TimeSpan.FromSeconds(Debugger.IsAttached ? 3000 : 13));
@@ -67,7 +108,7 @@ namespace MapFileDictTest
                 if (tskDelay.IsCompleted)
                 {
                     Trace.WriteLine($"Delay completed: cancelling server");
-                    oop.cts.Cancel();
+                    cts.Cancel();
                 }
                 await taskServer;
                 Trace.WriteLine($"Done");
@@ -85,9 +126,10 @@ sent message..requesting data
         [TestMethod]
         public async Task OOPTestinProcLog()
         {
-            using (var oop = new OutOfProc(OOPOption.InProcTestLogging))
+            var cts = new CancellationTokenSource();
+            using (var oop = new OutOfProc(Process.GetCurrentProcess().Id, OOPOption.InProcTestLogging, cts.Token))
             {
-                var taskServer = oop.CreateServer();
+                var taskServer = oop.CreateServerAsync();
 
                 var taskClient = DoTestClientAsync(oop);
                 var tskDelay = Task.Delay(TimeSpan.FromSeconds(Debugger.IsAttached ? 3000 : 13));
@@ -95,7 +137,7 @@ sent message..requesting data
                 if (tskDelay.IsCompleted)
                 {
                     Trace.WriteLine($"Delay completed: cancelling server");
-                    oop.cts.Cancel();
+                    cts.Cancel();
                 }
                 await taskServer;
                 Trace.WriteLine($"Done");
@@ -107,13 +149,14 @@ sent message..requesting data
         private async Task DoTestClientAsync(OutOfProc oop)
         {
             Trace.WriteLine("Starting Client");
+            var cts = new CancellationTokenSource();
             using (var pipeClient = new NamedPipeClientStream(
                 serverName: ".",
                 pipeName: oop.pipeName,
                 direction: PipeDirection.InOut,
                 options: PipeOptions.Asynchronous))
             {
-                await pipeClient.ConnectAsync(oop.cts.Token);
+                await pipeClient.ConnectAsync(cts.Token);
                 var verb = new byte[2] { 1, 1 };
                 for (int i = 0; i < 5; i++)
                 {

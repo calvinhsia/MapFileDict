@@ -34,9 +34,10 @@ namespace MapFileDict
     {
         public int chunkSize = 10;
         public byte[] speedBuf; // used for testing speed comm only
+        private CancellationToken token;
+        private readonly int pidClient;
         internal OOPOption option;
         public string pipeName;
-        public CancellationTokenSource cts;
         public IntPtr mappedSection;
         public uint sharedMapSize;
         public string sharedFileMapName;
@@ -44,18 +45,20 @@ namespace MapFileDict
         MemoryMappedViewAccessor mmfView;
         private readonly MyTraceListener mylistener;
 
-        public OutOfProc(OOPOption option)
+        public OutOfProc(int PidClient, OOPOption option, CancellationToken token)
         {
+            this.token = token;
+            this.pidClient = PidClient;
             this.option = option;
-            if (this.option != OOPOption.InProc)
+            if (pidClient != Process.GetCurrentProcess().Id)
             {
                 mylistener = new MyTraceListener();
                 Trace.Listeners.Add(mylistener);
             }
-            pipeName = "MyTestPipe";
-            sharedFileMapName = $"MapFileDict{Process.GetCurrentProcess().Id}\0";
+            pipeName = $"MapFileDictPipe_{PidClient}";
+            sharedFileMapName = $"MapFileDictSharedMem_{PidClient}\0";
             sharedMapSize = 65536U;
-            mmf = MemoryMappedFile.CreateNew(
+            mmf = MemoryMappedFile.CreateOrOpen(
                mapName: sharedFileMapName,
                capacity: sharedMapSize,
                access: MemoryMappedFileAccess.ReadWrite,
@@ -67,7 +70,6 @@ namespace MapFileDict
                size: 0,
                access: MemoryMappedFileAccess.ReadWrite);
             mappedSection = mmfView.SafeMemoryMappedViewHandle.DangerousGetHandle();
-            cts = new CancellationTokenSource();
             speedBuf = new byte[chunkSize];
         }
         internal void SetChunkSize(int newsize)
@@ -75,100 +77,101 @@ namespace MapFileDict
             this.chunkSize = newsize;
             speedBuf = new byte[chunkSize];
         }
-        public Task CreateServer()
+        public async Task CreateServerAsync()
         {
-            var taskServer = Task.Run(async () =>
-             {
-                 try
-                 {
-                     Trace.WriteLine("Server: Starting ");
-                     using (var pipeServer = new NamedPipeServerStream(
-                         pipeName: pipeName,
-                         direction: PipeDirection.InOut,
-                         maxNumberOfServerInstances: 1,
-                         transmissionMode: PipeTransmissionMode.Message,
-                         options: PipeOptions.Asynchronous
-                         ))
-                     {
-                         await pipeServer.WaitForConnectionAsync(cts.Token);
+            try
+            {
+                Trace.WriteLine("Server: Starting ");
+                using (var pipeServer = new NamedPipeServerStream(
+                    pipeName: pipeName,
+                    direction: PipeDirection.InOut,
+                    maxNumberOfServerInstances: 1,
+                    transmissionMode: PipeTransmissionMode.Message,
+                    options: PipeOptions.Asynchronous
+                    ))
+                {
+                    await pipeServer.WaitForConnectionAsync(token);
 
-                         var buff = new byte[100];
-                         var receivedQuit = false;
-                         using (var ctsReg = cts.Token.Register(
-                                () => { pipeServer.Disconnect(); Trace.WriteLine("Cancel: disconnect pipe"); }))
-                         {
-                             while (!receivedQuit)
-                             {
-                                 if (cts.Token.IsCancellationRequested)
-                                 {
-                                     Trace.WriteLine("server: got cancel");
-                                     receivedQuit = true;
-                                 }
-                                 var nBytesRead = await pipeServer.ReadAsync(buff, 0, 1, cts.Token);
-                                 switch ((Verbs)buff[0])
-                                 {
-                                     case Verbs.verbQuit:
-                                         await pipeServer.SendAckAsync();
-                                         Trace.WriteLine($"Server got quit message");
-                                         receivedQuit = true;
-                                         break;
-                                     case Verbs.verbGetLog:
-                                         var strlog = string.Join("\r\n     ServerLog::", mylistener.lstLoggedStrings);
-                                         mylistener.lstLoggedStrings.Clear();
-                                         var buf = Encoding.ASCII.GetBytes(strlog);
-                                         Marshal.Copy(buf, 0, mappedSection, buf.Length);
-                                         await pipeServer.SendAckAsync();
-                                         break;
-                                     case Verbs.verbStringSharedMem:
-                                         var len = Marshal.ReadIntPtr(mappedSection);
-                                         var str = Marshal.PtrToStringAnsi(mappedSection + IntPtr.Size, len.ToInt32());
-                                         Trace.WriteLine($"Server: SharedMemStr {str}");
-                                         break;
-                                     case Verbs.verbString:
-                                         var lstBytes = new List<byte>();
-                                         while (!pipeServer.IsMessageComplete)
-                                         {
-                                             var byt = pipeServer.ReadByte();
-                                             lstBytes.Add((byte)byt);
-                                         }
-                                         //var bufLen = buff[1];
-                                         //var strbuf = new byte[bufLen];
-                                         //await pipeServer.ReadAsync(strbuf, 0, bufLen, cts.Token);
-                                         var strRead = Encoding.ASCII.GetString(lstBytes.ToArray());
-                                         Trace.WriteLine($"Server Got str {strRead}");
-                                         break;
-                                     case Verbs.verbRequestData:
-                                         var strB = Encoding.ASCII.GetBytes($"Server: {DateTime.Now}");
-                                         await pipeServer.WriteAsync(strB, 0, strB.Length);
-                                         break;
-                                     case Verbs.verbSpeedTest:
-                                         {
-                                             await pipeServer.ReadAsync(speedBuf, 0, chunkSize - 1);
-                                             Trace.WriteLine($"Server: got bytes {chunkSize:n0}");
-                                         }
-                                         break;
-                                 }
-                             }
-                         }
-                     }
-                 }
-                 catch (IOException ex)
-                 {
-                     Trace.WriteLine($"Server: IOException" + ex.ToString());
-                     throw;
-                 }
-                 catch (OperationCanceledException)
-                 {
-                     Trace.WriteLine("Server: cancelled");
-                 }
+                    var buff = new byte[100];
+                    var receivedQuit = false;
+                    using (var ctsReg = token.Register(
+                           () => { pipeServer.Disconnect(); Trace.WriteLine("Cancel: disconnect pipe"); }))
+                    {
+                        while (!receivedQuit)
+                        {
+                            if (token.IsCancellationRequested)
+                            {
+                                Trace.WriteLine("server: got cancel");
+                                receivedQuit = true;
+                            }
+                            var nBytesRead = await pipeServer.ReadAsync(buff, 0, 1, token);
+                            switch ((Verbs)buff[0])
+                            {
+                                case Verbs.verbQuit:
+                                    await pipeServer.SendAckAsync();
+                                    Trace.WriteLine($"Server got quit message");
+                                    receivedQuit = true;
+                                    break;
+                                case Verbs.verbGetLog:
+                                    var strlog = string.Join("\r\n     ServerLog::", mylistener.lstLoggedStrings);
+                                    mylistener.lstLoggedStrings.Clear();
+                                    var buf = Encoding.ASCII.GetBytes(strlog);
+                                    Marshal.Copy(buf, 0, mappedSection, buf.Length);
+                                    await pipeServer.SendAckAsync();
+                                    break;
+                                case Verbs.verbStringSharedMem:
+                                    var len = Marshal.ReadIntPtr(mappedSection);
+                                    var str = Marshal.PtrToStringAnsi(mappedSection + IntPtr.Size, len.ToInt32());
+                                    Trace.WriteLine($"Server: SharedMemStr {str}");
+                                    break;
+                                case Verbs.verbString:
+                                    var lstBytes = new List<byte>();
+                                    while (!pipeServer.IsMessageComplete)
+                                    {
+                                        var byt = pipeServer.ReadByte();
+                                        lstBytes.Add((byte)byt);
+                                    }
+                                    var strRead = Encoding.ASCII.GetString(lstBytes.ToArray());
+                                    Trace.WriteLine($"Server Got str {strRead}");
+                                    break;
+                                case Verbs.verbRequestData:
+                                    var strB = Encoding.ASCII.GetBytes($"Server: {DateTime.Now}");
+                                    await pipeServer.WriteAsync(strB, 0, strB.Length);
+                                    break;
+                                case Verbs.verbSpeedTest:
+                                    {
+                                        await pipeServer.ReadAsync(speedBuf, 0, chunkSize - 1);
+                                        Trace.WriteLine($"Server: got bytes {chunkSize:n0}");
+                                    }
+                                    break;
+                            }
+                        }
+                    }
+                }
+            }
+            catch (IOException ex)
+            {
+                Trace.WriteLine($"Server: IOException" + ex.ToString());
+                throw;
+            }
+            catch (OperationCanceledException)
+            {
+                Trace.WriteLine("Server: cancelled");
+            }
 
-                 Trace.WriteLine("Server: exiting servertask");
-                 if (mylistener != null)
-                 {
-                     Trace.Listeners.Remove(mylistener);
-                 }
-             });
-            return taskServer;
+            Trace.WriteLine("Server: exiting servertask");
+            if (mylistener != null)
+            {
+                Trace.Listeners.Remove(mylistener);
+            }
+            if (pidClient != Process.GetCurrentProcess().Id)
+            {
+                Environment.Exit(0);
+            }
+            //var taskServer = Task.Run(async () =>
+            // {
+            // });
+            //return taskServer;
         }
 
         public void Dispose()
@@ -201,7 +204,7 @@ namespace MapFileDict
         {
             var buff = new byte[10];
             var len = await pipe.ReadAsync(buff, 0, 1);
-            if (len != 1 || buff[0] != (byte) Verbs.verbAck)
+            if (len != 1 || buff[0] != (byte)Verbs.verbAck)
             {
                 Trace.Write($"Didn't get Expected Ack");
             }

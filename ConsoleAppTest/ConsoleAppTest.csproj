@@ -51,5 +51,11 @@
   <ItemGroup>
     <None Include="App.config" />
   </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\MapFileDict\MapFileDict.csproj">
+      <Project>{67524564-a664-4f30-8708-ea8644d5f775}</Project>
+      <Name>MapFileDict</Name>
+    </ProjectReference>
+  </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
 </Project>

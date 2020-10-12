@@ -1,6 +1,8 @@
-﻿using System;
+﻿using MapFileDict;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO.Pipes;
 using System.Linq;
 using System.Text;
 using System.Threading;
@@ -19,20 +21,25 @@ namespace ConsoleAppTest
 
         private async Task DoMainAsync(string[] args)
         {
+            if (args.Length == 0)
+            {
+                return;
+            }
+            var pidClient = int.Parse(args[0]);
             //            doMyAsyncMethod().Wait();
             var tcsStaThread = new TaskCompletionSource<int>();
             var execContext = CreateExecutionContext(tcsStaThread);
             await execContext.Dispatcher.InvokeAsync(async () =>
             {
-                Trace.WriteLine("delay start");
-                await doMyAsyncMethod();
-                Trace.WriteLine("delay done");
-
+                var cts = new CancellationTokenSource();
+                var oop = new OutOfProc(pidClient, OOPOption.InProc, cts.Token); // we're inproc in the console app, but out of proc to the client
+                await oop.CreateServerAsync();
+                Trace.WriteLine("CreateServerAsync done");
             });
             Trace.WriteLine("done");
         }
 
-        private  async Task doMyAsyncMethod()
+        private async Task doMyAsyncMethod()
         {
             await Task.Delay(TimeSpan.FromSeconds(4));
         }
@@ -64,7 +71,7 @@ namespace ConsoleAppTest
                 tcsStaThread.SetResult(0);
             });
 
-//            myStaThread.SetApartmentState(ApartmentState.STA);
+            //            myStaThread.SetApartmentState(ApartmentState.STA);
             myStaThread.Name = Threadname;
             myStaThread.Start();
             Trace.WriteLine($"Starting {Threadname}");
