@@ -58,7 +58,20 @@ namespace MapFileDictTest
                     Trace.WriteLine($"Client: starting to connect");
                     await pipeClient.ConnectAsync(cts.Token);
                     Trace.WriteLine($"Client: connected");
+                    //                    await Task.Delay(5000);
                     var verb = new byte[2] { 1, 1 };
+
+                    for (int i = 0; i < 5; i++)
+                    {
+                        verb[0] = (byte)Verbs.verbRequestData;
+                        await pipeClient.WriteAsync(verb, 0, 1);
+                        var bufReq = new byte[100];
+                        var buflen = await pipeClient.ReadAsync(bufReq, 0, bufReq.Length);
+                        var readStr = Encoding.ASCII.GetString(bufReq, 0, buflen);
+                        Trace.WriteLine($"Client req data from server: {readStr}");
+                    }
+
+
 
                     Trace.WriteLine($"Client: GetLog");
                     verb[0] = (byte)Verbs.verbGetLog;
@@ -79,7 +92,7 @@ namespace MapFileDictTest
             {
                 Trace.WriteLine($"Waiting for cons app to exit");
                 await Task.Delay(TimeSpan.FromMilliseconds(1000));
-                if (! Debugger.IsAttached && sw.Elapsed.TotalSeconds > 10)
+                if (!Debugger.IsAttached && sw.Elapsed.TotalSeconds > 10000)
                 {
                     Trace.WriteLine($"Killing server process");
                     procServer.Kill();

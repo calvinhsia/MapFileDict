@@ -35,7 +35,6 @@ namespace MapFileDict
         public int chunkSize = 10;
         public byte[] speedBuf; // used for testing speed comm only
         private CancellationToken token;
-        private readonly int pidClient;
         internal OOPOption option;
         public string pipeName;
         public IntPtr mappedSection;
@@ -43,6 +42,7 @@ namespace MapFileDict
         public string sharedFileMapName;
         MemoryMappedFile mmf;
         MemoryMappedViewAccessor mmfView;
+        private readonly int pidClient;
         private readonly MyTraceListener mylistener;
 
         public OutOfProc(int PidClient, OOPOption option, CancellationToken token)
@@ -139,7 +139,9 @@ namespace MapFileDict
                                     Trace.WriteLine($"Server Got str {strRead}");
                                     break;
                                 case Verbs.verbRequestData:
-                                    var strB = Encoding.ASCII.GetBytes($"Server: {DateTime.Now}");
+                                    var strToSend = $"Server: {DateTime.Now}";
+                                    var strB = Encoding.ASCII.GetBytes(strToSend);
+                                    Trace.WriteLine($"Server: req data {strToSend}");
                                     await pipeServer.WriteAsync(strB, 0, strB.Length);
                                     break;
                                 case Verbs.verbSpeedTest:

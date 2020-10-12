@@ -11,11 +11,11 @@ using System.Windows.Threading;
 
 namespace ConsoleAppTest
 {
-    class Program
+    class ConsoleAppTestProgram
     {
         static void Main(string[] args)
         {
-            var myMain = new Program();
+            var myMain = new ConsoleAppTestProgram();
             myMain.DoMainAsync(args).Wait();
         }
 
@@ -36,8 +36,11 @@ namespace ConsoleAppTest
                 Trace.WriteLine("CreateServerAsync start");
                 await oop.CreateServerAsync();
                 Trace.WriteLine("CreateServerAsync done");
+                tcsStaThread.SetResult(0);
             });
-            Trace.WriteLine($"Server done {nameof(DoMainAsync)}");
+            await tcsStaThread.Task;
+//            Debugger.Launch();
+            Trace.WriteLine($"Server done!! {nameof(DoMainAsync)}");
         }
 
         private async Task doMyAsyncMethod()
