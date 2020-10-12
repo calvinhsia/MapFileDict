@@ -59,7 +59,7 @@
   </Choose>
   <ItemGroup>
     <Compile Include="MyTestBase.cs" />
-    <Compile Include="OOPComm.cs" />
+    <Compile Include="OOPCommTests.cs" />
     <Compile Include="TreeTests.cs" />
     <Compile Include="MapTests.cs" />
     <Compile Include="UnitTest1.cs" />
