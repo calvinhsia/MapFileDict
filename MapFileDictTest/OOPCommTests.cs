@@ -63,9 +63,7 @@ namespace MapFileDictTest
                     Trace.WriteLine($"Client: GetLog");
                     verb[0] = (byte)Verbs.verbGetLog;
                     await pipeClient.WriteAsync(verb, 0, 1);
-                    Trace.WriteLine($"Client: GotLog");
                     await pipeClient.GetAckAsync();
-                    Trace.WriteLine($"Client: GotAsync");
                     var logstrs = Marshal.PtrToStringAnsi(oop.mappedSection);
                     Trace.WriteLine($"Got log from server\r\n" + logstrs);
 
@@ -89,6 +87,10 @@ namespace MapFileDictTest
                 }
             }
             Trace.WriteLine($"Done in {sw.Elapsed.TotalSeconds:n2}");
+            VerifyLogStrings(@"
+IntPtr.Size = 4 Shared Memory region address
+IntPtr.Size = 8 Shared Memory region address
+");
         }
 
         [TestMethod]

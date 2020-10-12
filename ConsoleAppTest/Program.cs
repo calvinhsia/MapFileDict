@@ -33,10 +33,11 @@ namespace ConsoleAppTest
             {
                 var cts = new CancellationTokenSource();
                 var oop = new OutOfProc(pidClient, OOPOption.InProc, cts.Token); // we're inproc in the console app, but out of proc to the client
+                Trace.WriteLine("CreateServerAsync start");
                 await oop.CreateServerAsync();
                 Trace.WriteLine("CreateServerAsync done");
             });
-            Trace.WriteLine("done");
+            Trace.WriteLine($"Server done {nameof(DoMainAsync)}");
         }
 
         private async Task doMyAsyncMethod()

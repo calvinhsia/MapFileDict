@@ -54,6 +54,7 @@ namespace MapFileDict
             {
                 mylistener = new MyTraceListener();
                 Trace.Listeners.Add(mylistener);
+                Trace.WriteLine($"Server Trace Listener");
             }
             pipeName = $"MapFileDictPipe_{PidClient}";
             sharedFileMapName = $"MapFileDictSharedMem_{PidClient}\0";
@@ -70,6 +71,7 @@ namespace MapFileDict
                size: 0,
                access: MemoryMappedFileAccess.ReadWrite);
             mappedSection = mmfView.SafeMemoryMappedViewHandle.DangerousGetHandle();
+            Trace.WriteLine($"IntPtr.Size = {IntPtr.Size} Shared Memory region address {mappedSection.ToInt64():x16}");
             speedBuf = new byte[chunkSize];
         }
         internal void SetChunkSize(int newsize)
@@ -90,8 +92,9 @@ namespace MapFileDict
                     options: PipeOptions.Asynchronous
                     ))
                 {
+                    Trace.WriteLine($"Server: wait for connection");
                     await pipeServer.WaitForConnectionAsync(token);
-
+                    Trace.WriteLine($"Server: connected");
                     var buff = new byte[100];
                     var receivedQuit = false;
                     using (var ctsReg = token.Register(
@@ -113,6 +116,7 @@ namespace MapFileDict
                                     receivedQuit = true;
                                     break;
                                 case Verbs.verbGetLog:
+                                    Trace.WriteLine($"Server: Getlog #entries = {mylistener.lstLoggedStrings.Count}");
                                     var strlog = string.Join("\r\n     ServerLog::", mylistener.lstLoggedStrings);
                                     mylistener.lstLoggedStrings.Clear();
                                     var buf = Encoding.ASCII.GetBytes(strlog);
@@ -168,10 +172,6 @@ namespace MapFileDict
             {
                 Environment.Exit(0);
             }
-            //var taskServer = Task.Run(async () =>
-            // {
-            // });
-            //return taskServer;
         }
 
         public void Dispose()
@@ -189,7 +189,10 @@ namespace MapFileDict
         }
         public override void WriteLine(string str)
         {
-            lstLoggedStrings.Add(str);
+            var dt = string.Format("[{0}],",
+                 DateTime.Now.ToString("hh:mm:ss:fff")
+                 ) + $"{Thread.CurrentThread.ManagedThreadId,2} ";
+            lstLoggedStrings.Add(dt + str);
         }
     }
     public static class ExtensionMethods
