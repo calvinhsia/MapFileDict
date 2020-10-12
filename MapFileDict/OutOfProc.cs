@@ -15,26 +15,44 @@ namespace MapFileDict
     public enum Verbs
     {
         verbQuit, // len =1 byte: 0 args
+        verbAck, // acknowledge
+        verbGetLog,
         verbString, // 
         verbStringSharedMem,
         verbSpeedTest,
         verbRequestData, // len = 1 byte: 0 args
         verbSendObjAndReferences, // a single obj and a list of it's references
     }
-    public class OutOfProc
+    public enum OOPOption
     {
-        public int chunkSize;
-        public byte[] speedBuf;
+        InProc,
+        InProcTestLogging,
+        Out32bit,
+        Out64Bit
+    }
+    public class OutOfProc : IDisposable
+    {
+        public int chunkSize = 10;
+        public byte[] speedBuf; // used for testing speed comm only
+        internal OOPOption option;
         public string pipeName;
         public CancellationTokenSource cts;
         public IntPtr mappedSection;
         public uint sharedMapSize;
         public string sharedFileMapName;
-        public MemoryMappedFile mmf;
-        public MemoryMappedViewAccessor mmfView;
-        public OutOfProc(int chunkSize = 100)
+        MemoryMappedFile mmf;
+        MemoryMappedViewAccessor mmfView;
+        private readonly MyTraceListener mylistener;
+
+        public OutOfProc(OOPOption option)
         {
-            this.chunkSize = chunkSize;
+            this.option = option;
+            if (this.option != OOPOption.InProc)
+            {
+                mylistener = new MyTraceListener();
+                Trace.Listeners.Add(mylistener);
+            }
+            pipeName = "MyTestPipe";
             sharedFileMapName = $"MapFileDict{Process.GetCurrentProcess().Id}\0";
             sharedMapSize = 65536U;
             mmf = MemoryMappedFile.CreateNew(
@@ -50,10 +68,14 @@ namespace MapFileDict
                access: MemoryMappedFileAccess.ReadWrite);
             mappedSection = mmfView.SafeMemoryMappedViewHandle.DangerousGetHandle();
             cts = new CancellationTokenSource();
-            pipeName = "MyTestPipe";
             speedBuf = new byte[chunkSize];
         }
-        public Task CreateServer(string pipeName, IntPtr mappedSection, CancellationToken token)
+        internal void SetChunkSize(int newsize)
+        {
+            this.chunkSize = newsize;
+            speedBuf = new byte[chunkSize];
+        }
+        public Task CreateServer()
         {
             var taskServer = Task.Run(async () =>
              {
@@ -68,26 +90,34 @@ namespace MapFileDict
                          options: PipeOptions.Asynchronous
                          ))
                      {
-                         await pipeServer.WaitForConnectionAsync(token);
+                         await pipeServer.WaitForConnectionAsync(cts.Token);
 
                          var buff = new byte[100];
                          var receivedQuit = false;
-                         using (var ctsReg = token.Register(
+                         using (var ctsReg = cts.Token.Register(
                                 () => { pipeServer.Disconnect(); Trace.WriteLine("Cancel: disconnect pipe"); }))
                          {
                              while (!receivedQuit)
                              {
-                                 if (token.IsCancellationRequested)
+                                 if (cts.Token.IsCancellationRequested)
                                  {
                                      Trace.WriteLine("server: got cancel");
                                      receivedQuit = true;
                                  }
-                                 var nBytesRead = await pipeServer.ReadAsync(buff, 0, 1, token);
+                                 var nBytesRead = await pipeServer.ReadAsync(buff, 0, 1, cts.Token);
                                  switch ((Verbs)buff[0])
                                  {
                                      case Verbs.verbQuit:
+                                         await pipeServer.SendAckAsync();
                                          Trace.WriteLine($"Server got quit message");
                                          receivedQuit = true;
+                                         break;
+                                     case Verbs.verbGetLog:
+                                         var strlog = string.Join("\r\n     ServerLog::", mylistener.lstLoggedStrings);
+                                         mylistener.lstLoggedStrings.Clear();
+                                         var buf = Encoding.ASCII.GetBytes(strlog);
+                                         Marshal.Copy(buf, 0, mappedSection, buf.Length);
+                                         await pipeServer.SendAckAsync();
                                          break;
                                      case Verbs.verbStringSharedMem:
                                          var len = Marshal.ReadIntPtr(mappedSection);
@@ -131,10 +161,50 @@ namespace MapFileDict
                  {
                      Trace.WriteLine("Server: cancelled");
                  }
-                 Trace.WriteLine("Server: exiting servertask");
 
+                 Trace.WriteLine("Server: exiting servertask");
+                 if (mylistener != null)
+                 {
+                     Trace.Listeners.Remove(mylistener);
+                 }
              });
             return taskServer;
+        }
+
+        public void Dispose()
+        {
+            mmfView.Dispose();
+            mmf.Dispose();
+        }
+    }
+    public class MyTraceListener : TextWriterTraceListener
+    {
+        public List<string> lstLoggedStrings;
+        public MyTraceListener()
+        {
+            lstLoggedStrings = new List<string>();
+        }
+        public override void WriteLine(string str)
+        {
+            lstLoggedStrings.Add(str);
+        }
+    }
+    public static class ExtensionMethods
+    {
+        public static async Task SendAckAsync(this PipeStream pipe)
+        {
+            var verb = new byte[2];
+            verb[0] = (byte)Verbs.verbAck;
+            await pipe.WriteAsync(verb, 0, 1);
+        }
+        public static async Task GetAckAsync(this PipeStream pipe)
+        {
+            var buff = new byte[10];
+            var len = await pipe.ReadAsync(buff, 0, 1);
+            if (len != 1 || buff[0] != (byte) Verbs.verbAck)
+            {
+                Trace.Write($"Didn't get Expected Ack");
+            }
         }
     }
 }
