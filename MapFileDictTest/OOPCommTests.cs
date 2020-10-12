@@ -37,13 +37,22 @@ namespace MapFileDictTest
             }
         }
         [TestMethod]
-        public async Task OOPPipeTesting()
+        public async Task OOPTestConsoleApp()
         {
             await Task.Yield();
+            var consapp = "ConsoleAppTest.exe";
+            var proc = Process.Start(consapp);
+            var sw = Stopwatch.StartNew();
+            while (!proc.HasExited)
+            {
+                Trace.WriteLine($"Waiting for cons app to exit");
+                await Task.Delay(TimeSpan.FromMilliseconds(100));
+            }
+            Trace.WriteLine($"Cons app exited in {sw.Elapsed.TotalSeconds:n2}");
         }
 
         [TestMethod]
-        public async Task PipeTestingInProc()
+        public async Task OOPTestInProc()
         {
             using (var oop = new OutOfProc(OOPOption.InProc))
             {
@@ -74,7 +83,7 @@ sent message..requesting data
 
 
         [TestMethod]
-        public async Task PipeTestingInProcLog()
+        public async Task OOPTestinProcLog()
         {
             using (var oop = new OutOfProc(OOPOption.InProcTestLogging))
             {

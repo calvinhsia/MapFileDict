@@ -66,6 +66,10 @@
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
   <ItemGroup>
+    <ProjectReference Include="..\ConsoleAppTest\ConsoleAppTest.csproj">
+      <Project>{abcbab0b-45fd-4996-a8dc-cdbb5cf2bcbc}</Project>
+      <Name>ConsoleAppTest</Name>
+    </ProjectReference>
     <ProjectReference Include="..\MapFileDict\MapFileDict.csproj">
       <Project>{67524564-a664-4f30-8708-ea8644d5f775}</Project>
       <Name>MapFileDict</Name>
