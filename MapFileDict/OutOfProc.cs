@@ -190,25 +190,34 @@ namespace MapFileDict
                             switch ((Verbs)buff[0])
                             {
                                 case Verbs.verbQuit:
+                                    Trace.WriteLine($"# dict entries = {dictObjRef.Count}");
                                     await pipeServer.SendAckAsync();
                                     Trace.WriteLine($"Server got quit message");
                                     receivedQuit = true;
                                     break;
                                 case Verbs.verbSendObjAndReferences:
-                                    //var b = new BinaryFormatter();
+                                    var b = new BinaryFormatter();
+                                    unsafe
+                                    {
+                                        var mbPtr = (byte*)mappedSection.ToPointer();
+                                        using (var ms = new UnmanagedMemoryStream(mbPtr, sharedMapSize, sharedMapSize, FileAccess.ReadWrite))
+                                        {
+                                            var objAndRef = b.Deserialize(ms) as ObjAndRefs;
+                                            dictObjRef[objAndRef.obj] = objAndRef;
+//                                            Trace.WriteLine($"Server got {nameof(Verbs.verbSendObjAndReferences)}  {objAndRef}");
+                                        }
+
+                                    }
                                     //var objAndRef = b.Deserialize(pipeServer) as ObjAndRefs;
                                     //dictObjRef[objAndRef.obj] = objAndRef;
                                     //Trace.WriteLine($"Server got {nameof(Verbs.verbSendObjAndReferences)}  {objAndRef}");
-                                    for (int i = 0; i < 10; i++)
-                                    {
-                                        pipeServer.ReadByte();
-                                    }
                                     await pipeServer.SendAckAsync();
 
                                     break;
                                 case Verbs.verbGetLog:
                                     if (mylistener != null)
                                     {
+                                        Trace.WriteLine($"# dict entries = {dictObjRef.Count}");
                                         Trace.WriteLine($"Server: Getlog #entries = {mylistener.lstLoggedStrings.Count}");
                                         var strlog = string.Join("\r\n   ", mylistener.lstLoggedStrings);
                                         mylistener.lstLoggedStrings.Clear();
@@ -336,7 +345,6 @@ namespace MapFileDict
         public static async Task SendVerb(this PipeStream pipe, Verbs verb, Func<Task> funcAsync = null)
         {
             var verbBuf = new byte[2];
-            Trace.WriteLine($"Client: sending {verb}");
             verbBuf[0] = (byte)verb;
             await pipe.WriteAsync(verbBuf, 0, 1);
             if (funcAsync != null)

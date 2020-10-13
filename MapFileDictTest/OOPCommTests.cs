@@ -3,6 +3,7 @@ using Microsoft.VisualStudio.TestTools.UnitTesting;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.IO.Pipes;
 using System.Runtime.InteropServices;
 using System.Runtime.Serialization.Formatters.Binary;
@@ -32,32 +33,28 @@ namespace MapFileDictTest
                      //   1 : # of references
                      //   
                      // obj of 0 indicates end of list
-                     int numObjs = 10;
+                     int numObjs = 10000;
                      for (uint iObj = 0; iObj < numObjs; iObj++)
                      {
-                         await pipeClient.SendVerb(Verbs.verbSendObjAndReferences, async () =>
-                          {
-                              for (int i = 0; i < 10; i++)
-                              {
-                                  pipeClient.WriteByte((byte)i);
-                              }
-                              //await pipeClient.WriteByte()
-                              //for (int i = 0; i < numObjs; i++)
-                              //{
-                              var x = new ObjAndRefs()
-                              {
-                                  obj = 1 + iObj
-                              };
-                              x.lstRefs.Add(2 + iObj * 10);
+                         var x = new ObjAndRefs()
+                         {
+                             obj = 1 + iObj
+                         };
+                         x.lstRefs.Add(2 + iObj * 10);
 
-                              x.lstRefs.Add(3 + iObj * 10);
+                         x.lstRefs.Add(3 + iObj * 10);
 
-                              var b = new BinaryFormatter();
-                              Trace.Write($"client sending {nameof(Verbs.verbSendObjAndReferences)} {x}");
-//                              b.Serialize(pipeClient, x);
-                              //}
-                              await Task.Yield();
-                          });
+                         var b = new BinaryFormatter();
+                         unsafe
+                         {
+                             var mbytePtr = (byte*)oop.mappedSection.ToPointer();
+                             using (var ms = new UnmanagedMemoryStream(mbytePtr, oop.sharedMapSize, oop.sharedMapSize, FileAccess.ReadWrite))
+                             {
+                                 b.Serialize(ms, x);
+                             }
+                         }
+//                         Trace.Write($"client sending {nameof(Verbs.verbSendObjAndReferences)} {x}");
+                         await pipeClient.SendVerb(Verbs.verbSendObjAndReferences);
                      }
                      Trace.WriteLine($"Got log from server\r\n" + await oop.GetLogFromServer(pipeClient));
 
@@ -195,7 +192,7 @@ IntPtr.Size = 8 Shared Memory region address
                 var taskServer = oop.DoServerLoopAsync();
 
                 var taskClient = DoTestClientAsync(oop);
-                var tskDelay = Task.Delay(TimeSpan.FromSeconds(Debugger.IsAttached ? 3000 : 13));
+                var tskDelay = Task.Delay(TimeSpan.FromSeconds(Debugger.IsAttached ? 3000 : 30));
                 await Task.WhenAny(new[] { tskDelay, taskClient });
                 if (tskDelay.IsCompleted)
                 {
@@ -226,25 +223,30 @@ sent message..requesting data
             {
                 await pipeClient.ConnectAsync(cts.Token);
 
-                //                await pipeClient.SendVerb(Verbs.verbSendObjAndReferences, async () =>
-                //                 {
-                ////                     int numObjs = 10000;
-                //                          //await pipeClient.WriteByte()
-                //                          //for (int i = 0; i < numObjs; i++)
-                //                          //{
-                //                          var x = new ObjAndRefs()
-                //                     {
-                //                         obj = 1
-                //                     };
-                //                     x.lstRefs.Add(2);
-                //                     x.lstRefs.Add(3);
-                //                     Trace.Write($"client sending {nameof(Verbs.verbSendObjAndReferences)} {x}");
+                int numObjs = 1024;
+                for (uint iObj = 0; iObj < numObjs; iObj++)
+                {
+                    var x = new ObjAndRefs()
+                    {
+                        obj = 1 + iObj
+                    };
+                    x.lstRefs.Add(2 + iObj * 10);
 
-                //                     var b = new BinaryFormatter();
-                //                     b.Serialize(pipeClient, x);
-                //                          //}
-                //                          await Task.Yield();
-                //                 });
+                    x.lstRefs.Add(3 + iObj * 10);
+
+                    var b = new BinaryFormatter();
+                    unsafe
+                    {
+                        var mbytePtr = (byte*)oop.mappedSection.ToPointer();
+                        using (var ms = new UnmanagedMemoryStream(mbytePtr, oop.sharedMapSize, oop.sharedMapSize, FileAccess.ReadWrite))
+                        {
+                            b.Serialize(ms, x);
+                        }
+                    }
+                    //                         Trace.Write($"client sending {nameof(Verbs.verbSendObjAndReferences)} {x}");
+                    await pipeClient.SendVerb(Verbs.verbSendObjAndReferences);
+                }
+
 
 
                 var verb = new byte[2] { 1, 1 };
