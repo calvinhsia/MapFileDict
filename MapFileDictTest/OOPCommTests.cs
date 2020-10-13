@@ -14,16 +14,30 @@ namespace MapFileDictTest
     public class OOPCommTests : MyTestBase
     {
         [TestMethod]
+        public async Task OOPSendAndQuery()
+        {
+            await Task.Yield();
+            try
+            {
+                //var pidClient = Process.GetCurrentProcess().Id;
+                //var procServer = OutOfProc.CreateServer(pidClient);
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine(ex.ToString());
+                throw;
+            }
+        }
+
+        [TestMethod]
         public async Task OOPTest()
         {
-            Trace.WriteLine($"Start {nameof(OOPTest)}");
             try
             {
                 await Task.Yield();
                 var outputLogFile = TestContext.Properties[ContextPropertyLogFile] as string;
                 Trace.WriteLine($"Log = {outputLogFile}");
                 MyClassThatRunsIn32and64bit.CreateAndRun(outputLogFile);
-
             }
             catch (Exception ex)
             {
@@ -41,7 +55,7 @@ namespace MapFileDictTest
 
             var procServer = Process.Start(consapp, $"{pidClient}");
             Trace.WriteLine($"Client: started server {procServer.Id}");
-            await DoServerStuff(procServer, pidClient);
+            await DoTheGenericServerStuffAsync(pidClient, procServer);
 
             VerifyLogStrings(@"
 IntPtr.Size = 4 Shared Memory region address
@@ -56,7 +70,7 @@ IntPtr.Size = 8 Shared Memory region address
 
             var procServer = OutOfProc.CreateServer(pidClient);
             Trace.WriteLine($"Client: started server PidClient={pidClient} PidServer={procServer.Id}");
-            await DoServerStuff(procServer, pidClient);
+            await DoTheGenericServerStuffAsync(pidClient, procServer);
 
             VerifyLogStrings(@"
 IntPtr.Size = 4 Shared Memory region address
@@ -64,7 +78,39 @@ IntPtr.Size = 8 Shared Memory region address
 ");
         }
 
-        private async Task DoServerStuff(Process procServer, int pidClient)
+        private async Task DoTheGenericServerStuffAsync(int pidClient, Process procServer)
+        {
+            await DoServerStuff(procServer, pidClient, async (pipeClient, oop) =>
+            {
+                //                    await Task.Delay(5000);
+                var verb = new byte[2] { 1, 1 };
+
+                for (int i = 0; i < 5; i++)
+                {
+                    verb[0] = (byte)Verbs.verbRequestData;
+                    await pipeClient.WriteAsync(verb, 0, 1);
+                    var bufReq = new byte[100];
+                    var buflen = await pipeClient.ReadAsync(bufReq, 0, bufReq.Length);
+                    var readStr = Encoding.ASCII.GetString(bufReq, 0, buflen);
+                    Trace.WriteLine($"Client req data from server: {readStr}");
+                }
+
+                Trace.WriteLine($"Client: GetLog");
+                verb[0] = (byte)Verbs.verbGetLog;
+                await pipeClient.WriteAsync(verb, 0, 1);
+                await pipeClient.GetAckAsync();
+                var logstrs = Marshal.PtrToStringAnsi(oop.mappedSection);
+                Trace.WriteLine($"Got log from server\r\n" + logstrs);
+
+
+                Trace.WriteLine($"Client: sending quit");
+                verb[0] = (byte)Verbs.verbQuit;
+                await pipeClient.WriteAsync(verb, 0, 1);
+                await pipeClient.GetAckAsync();
+            });
+        }
+
+        private async Task DoServerStuff(Process procServer, int pidClient, Func<NamedPipeClientStream, OutOfProc, Task> func)
         {
             var sw = Stopwatch.StartNew();
             var cts = new CancellationTokenSource();
@@ -80,34 +126,7 @@ IntPtr.Size = 8 Shared Memory region address
                     Trace.WriteLine($"Client: starting to connect");
                     await pipeClient.ConnectAsync(cts.Token);
                     Trace.WriteLine($"Client: connected");
-                    //                    await Task.Delay(5000);
-                    var verb = new byte[2] { 1, 1 };
-
-                    for (int i = 0; i < 5; i++)
-                    {
-                        verb[0] = (byte)Verbs.verbRequestData;
-                        await pipeClient.WriteAsync(verb, 0, 1);
-                        var bufReq = new byte[100];
-                        var buflen = await pipeClient.ReadAsync(bufReq, 0, bufReq.Length);
-                        var readStr = Encoding.ASCII.GetString(bufReq, 0, buflen);
-                        Trace.WriteLine($"Client req data from server: {readStr}");
-                    }
-
-
-
-                    Trace.WriteLine($"Client: GetLog");
-                    verb[0] = (byte)Verbs.verbGetLog;
-                    await pipeClient.WriteAsync(verb, 0, 1);
-                    await pipeClient.GetAckAsync();
-                    var logstrs = Marshal.PtrToStringAnsi(oop.mappedSection);
-                    Trace.WriteLine($"Got log from server\r\n" + logstrs);
-
-
-                    Trace.WriteLine($"Client: sending quit");
-                    verb[0] = (byte)Verbs.verbQuit;
-                    await pipeClient.WriteAsync(verb, 0, 1);
-                    await pipeClient.GetAckAsync();
-
+                    await func(pipeClient, oop);
                 }
             }
             while (!procServer.HasExited)

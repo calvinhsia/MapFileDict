@@ -100,11 +100,11 @@ namespace MapFileDict
                                }"" {nameof(OutOfProc)} {
                                    nameof(OutOfProc.MyMainMethod)} {pidClient}";
             Trace.WriteLine($"args = {args}");
-            var p64 = Process.Start(
+            var procServer = Process.Start(
                 asm64BitFile,
                 args);
-            return p64;
-//            p64.WaitForExit(30 * 1000);
+            Trace.WriteLine($"Client: started server PidClient={pidClient} PidServer={procServer.Id}");
+            return procServer;
         }
         /// <summary>
         /// This runs in the 64 bit server process

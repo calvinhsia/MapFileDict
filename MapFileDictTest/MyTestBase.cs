@@ -27,6 +27,7 @@ namespace MapFileDictTest
                 TestContext,
                 MyTextWriterTraceListener.MyTextWriterTraceListenerOptions.OutputToFileAsync | MyTextWriterTraceListener.MyTextWriterTraceListenerOptions.AddDateTime
                 );
+            Trace.WriteLine($"Start test '{TestContext.TestName}'");
         }
         [TestCleanup]
         public void TestCleanup()
