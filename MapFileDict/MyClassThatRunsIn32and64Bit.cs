@@ -58,7 +58,7 @@ namespace MapFileDict
                 }
                 catch (Exception ex)
                 {
-                    sb.AppendLine($" {ex.ToString()}");
+                    sb.AppendLine($" {ex}");
                 }
                 //                sb.AppendLine($"Allocated {numAllocated} Gigs");
             }

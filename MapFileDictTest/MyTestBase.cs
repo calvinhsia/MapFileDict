@@ -41,10 +41,10 @@ namespace MapFileDictTest
     public class MyTextWriterTraceListener : TextWriterTraceListener, IDisposable
     {
         private readonly string LogFileName;
-        private TestContext testContext;
+        private readonly TestContext testContext;
         private readonly MyTextWriterTraceListenerOptions options;
         public List<string> _lstLoggedStrings;
-        ConcurrentQueue<string> _qLogStrings;
+        readonly ConcurrentQueue<string> _qLogStrings;
 
         private Task taskOutput;
         private CancellationTokenSource ctsBatchProcessor;
@@ -217,7 +217,7 @@ namespace MapFileDictTest
         {
             int numFailures = 0;
             var firstFailure = string.Empty;
-            Func<string, string, bool> IsIt = (strExpected, strActual) =>
+            bool IsIt(string strExpected, string strActual)
             {
                 var hasit = false;
                 if (!string.IsNullOrEmpty(strActual))
@@ -232,7 +232,7 @@ namespace MapFileDictTest
                     }
                 }
                 return hasit;
-            };
+            }
             foreach (var str in strsExpected)
             {
                 if (!_lstLoggedStrings.Where(s => IsIt(str, s)).Any())

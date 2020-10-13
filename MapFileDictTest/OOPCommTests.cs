@@ -1,13 +1,8 @@
 ﻿using MapFileDict;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using System;
-using System.Collections.Generic;
 using System.Diagnostics;
-using System.IO;
-using System.IO.MemoryMappedFiles;
 using System.IO.Pipes;
-using System.Linq;
-using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
@@ -36,18 +31,45 @@ namespace MapFileDictTest
                 throw;
             }
         }
+
+
         [TestMethod]
         public async Task OOPTestConsoleApp()
         {
-            await Task.Yield();
             var consapp = "ConsoleAppTest.exe";
             var pidClient = Process.GetCurrentProcess().Id;
+
             var procServer = Process.Start(consapp, $"{pidClient}");
             Trace.WriteLine($"Client: started server {procServer.Id}");
+            await DoServerStuff(procServer, pidClient);
+
+            VerifyLogStrings(@"
+IntPtr.Size = 4 Shared Memory region address
+IntPtr.Size = 8 Shared Memory region address
+");
+        }
+
+        [TestMethod]
+        public async Task OOPTestGenAsm()
+        {
+            var pidClient = Process.GetCurrentProcess().Id;
+
+            var procServer = OutOfProc.CreateServer(pidClient);
+            Trace.WriteLine($"Client: started server PidClient={pidClient} PidServer={procServer.Id}");
+            await DoServerStuff(procServer, pidClient);
+
+            VerifyLogStrings(@"
+IntPtr.Size = 4 Shared Memory region address
+IntPtr.Size = 8 Shared Memory region address
+");
+        }
+
+        private async Task DoServerStuff(Process procServer, int pidClient)
+        {
             var sw = Stopwatch.StartNew();
             var cts = new CancellationTokenSource();
 
-            using (var oop = new OutOfProc(pidClient, OOPOption.Out32bit, cts.Token))
+            using (var oop = new OutOfProc(pidClient, cts.Token))
             {
                 using (var pipeClient = new NamedPipeClientStream(
                     serverName: ".",
@@ -92,7 +114,7 @@ namespace MapFileDictTest
             {
                 Trace.WriteLine($"Waiting for cons app to exit");
                 await Task.Delay(TimeSpan.FromMilliseconds(1000));
-                if (!Debugger.IsAttached && sw.Elapsed.TotalSeconds > 10000)
+                if (!Debugger.IsAttached && sw.Elapsed.TotalSeconds > 10)
                 {
                     Trace.WriteLine($"Killing server process");
                     procServer.Kill();
@@ -100,22 +122,18 @@ namespace MapFileDictTest
                 }
             }
             Trace.WriteLine($"Done in {sw.Elapsed.TotalSeconds:n2}");
-            VerifyLogStrings(@"
-IntPtr.Size = 4 Shared Memory region address
-IntPtr.Size = 8 Shared Memory region address
-");
         }
 
         [TestMethod]
         public async Task OOPTestInProc()
         {
             var cts = new CancellationTokenSource();
-            using (var oop = new OutOfProc(Process.GetCurrentProcess().Id, OOPOption.InProc, cts.Token))
+            using (var oop = new OutOfProc(Process.GetCurrentProcess().Id, cts.Token))
             {
                 oop.SetChunkSize(1024 * 1024 * 1024);
                 Trace.WriteLine($"Mapped Section {oop.mappedSection} 0x{oop.mappedSection.ToInt32():x8}");
 
-                var taskServer = oop.CreateServerAsync();
+                var taskServer = oop.DoServerLoopAsync();
 
                 var taskClient = DoTestClientAsync(oop);
                 var tskDelay = Task.Delay(TimeSpan.FromSeconds(Debugger.IsAttached ? 3000 : 13));
@@ -136,30 +154,6 @@ Server got quit message
 sent message..requesting data
 ");
         }
-
-
-        [TestMethod]
-        public async Task OOPTestinProcLog()
-        {
-            var cts = new CancellationTokenSource();
-            using (var oop = new OutOfProc(Process.GetCurrentProcess().Id, OOPOption.InProcTestLogging, cts.Token))
-            {
-                var taskServer = oop.CreateServerAsync();
-
-                var taskClient = DoTestClientAsync(oop);
-                var tskDelay = Task.Delay(TimeSpan.FromSeconds(Debugger.IsAttached ? 3000 : 13));
-                await Task.WhenAny(new[] { tskDelay, taskClient });
-                if (tskDelay.IsCompleted)
-                {
-                    Trace.WriteLine($"Delay completed: cancelling server");
-                    cts.Cancel();
-                }
-                await taskServer;
-                Trace.WriteLine($"Done");
-                Assert.IsTrue(taskServer.IsCompleted);
-            }
-        }
-
 
         private async Task DoTestClientAsync(OutOfProc oop)
         {
@@ -214,7 +208,7 @@ sent message..requesting data
                     var bps = (double)oop.chunkSize * nIter / sw.Elapsed.TotalSeconds;
                     Trace.WriteLine($"BytesPerSec = {bps:n0}"); // 1.4 G/Sec
                 }
-                if (oop.option == OOPOption.InProcTestLogging)
+//                if (oop.option == OOPOption.InProcTestLogging)
                 {
                     Trace.WriteLine($"getting log from server");
                     verb[0] = (byte)Verbs.verbGetLog;

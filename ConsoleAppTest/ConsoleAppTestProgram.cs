@@ -26,27 +26,33 @@ namespace ConsoleAppTest
                 return;
             }
             var pidClient = int.Parse(args[0]);
-            //            doMyAsyncMethod().Wait();
-            var tcsStaThread = new TaskCompletionSource<int>();
-            var execContext = CreateExecutionContext(tcsStaThread);
-            await execContext.Dispatcher.InvokeAsync(async () =>
+
+            //*
+            var cts = new CancellationTokenSource();
+            using (var oop = new OutOfProc(pidClient, cts.Token)) // we're inproc in the console app, but out of proc to the client
             {
-                var cts = new CancellationTokenSource();
-                var oop = new OutOfProc(pidClient, OOPOption.InProc, cts.Token); // we're inproc in the console app, but out of proc to the client
                 Trace.WriteLine("CreateServerAsync start");
-                await oop.CreateServerAsync();
+                await oop.DoServerLoopAsync();
                 Trace.WriteLine("CreateServerAsync done");
-                tcsStaThread.SetResult(0);
-            });
-            await tcsStaThread.Task;
-//            Debugger.Launch();
+                /*/
+                var tcsStaThread = new TaskCompletionSource<int>();
+                var execContext = CreateExecutionContext(tcsStaThread);
+                await execContext.Dispatcher.InvokeAsync(async () =>
+                {
+                    var cts = new CancellationTokenSource();
+                    var oop = new OutOfProc(pidClient, OOPOption.InProc, cts.Token); // we're inproc in the console app, but out of proc to the client
+                    Trace.WriteLine("CreateServerAsync start");
+                    await oop.CreateServerAsync();
+                    Trace.WriteLine("CreateServerAsync done");
+                    tcsStaThread.SetResult(0);
+                });
+                await tcsStaThread.Task;
+                //*/
+            }
+
             Trace.WriteLine($"Server done!! {nameof(DoMainAsync)}");
         }
 
-        private async Task doMyAsyncMethod()
-        {
-            await Task.Delay(TimeSpan.FromSeconds(4));
-        }
         MyExecutionContext CreateExecutionContext(TaskCompletionSource<int> tcsStaThread)
         {
             const string Threadname = "MyStaThread";
@@ -73,10 +79,12 @@ namespace ConsoleAppTest
                 Dispatcher.Run();
                 Trace.WriteLine($"MyStaThread After Dispatcher.run");
                 tcsStaThread.SetResult(0);
-            });
+            })
+            {
 
-            //            myStaThread.SetApartmentState(ApartmentState.STA);
-            myStaThread.Name = Threadname;
+                //            myStaThread.SetApartmentState(ApartmentState.STA);
+                Name = Threadname
+            };
             myStaThread.Start();
             Trace.WriteLine($"Starting {Threadname}");
             return tcsGetExecutionContext.Task.Result;

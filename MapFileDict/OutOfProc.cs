@@ -5,6 +5,7 @@ using System.IO;
 using System.IO.MemoryMappedFiles;
 using System.IO.Pipes;
 using System.Linq;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
@@ -23,41 +24,41 @@ namespace MapFileDict
         verbRequestData, // len = 1 byte: 0 args
         verbSendObjAndReferences, // a single obj and a list of it's references
     }
-    public enum OOPOption
-    {
-        InProc,
-        InProcTestLogging,
-        Out32bit,
-        Out64Bit
-    }
     public class OutOfProc : IDisposable
     {
         public int chunkSize = 10;
         public byte[] speedBuf; // used for testing speed comm only
         private CancellationToken token;
-        internal OOPOption option;
         public string pipeName;
         public IntPtr mappedSection;
         public uint sharedMapSize;
         public string sharedFileMapName;
         MemoryMappedFile mmf;
         MemoryMappedViewAccessor mmfView;
-        private readonly int pidClient;
-        private readonly MyTraceListener mylistener;
+        private int pidClient;
+        private MyTraceListener mylistener;
 
-        public OutOfProc(int PidClient, OOPOption option, CancellationToken token)
+        public OutOfProc() // need a parameterless constructor 
+        {
+
+        }
+        public OutOfProc(int PidClient, CancellationToken token)
+        {
+            this.Initialize(PidClient, token);
+        }
+
+        private void Initialize(int pidClient, CancellationToken token)
         {
             this.token = token;
-            this.pidClient = PidClient;
-            this.option = option;
+            this.pidClient = pidClient;
             if (pidClient != Process.GetCurrentProcess().Id)
             {
                 mylistener = new MyTraceListener();
                 Trace.Listeners.Add(mylistener);
-                Trace.WriteLine($"Server Trace Listener");
+                Trace.WriteLine($"Server Trace Listener created");
             }
-            pipeName = $"MapFileDictPipe_{PidClient}";
-            sharedFileMapName = $"MapFileDictSharedMem_{PidClient}\0";
+            pipeName = $"MapFileDictPipe_{pidClient}";
+            sharedFileMapName = $"MapFileDictSharedMem_{pidClient}\0";
             sharedMapSize = 65536U;
             mmf = MemoryMappedFile.CreateOrOpen(
                mapName: sharedFileMapName,
@@ -74,12 +75,52 @@ namespace MapFileDict
             Trace.WriteLine($"IntPtr.Size = {IntPtr.Size} Shared Memory region address {mappedSection.ToInt64():x16}");
             speedBuf = new byte[chunkSize];
         }
+
         internal void SetChunkSize(int newsize)
         {
             this.chunkSize = newsize;
             speedBuf = new byte[chunkSize];
         }
-        public async Task CreateServerAsync()
+        public static Process CreateServer(int pidClient)
+        {
+            var asm64BitFile = new FileInfo(Path.ChangeExtension("tempasm", ".exe")).FullName;
+            if (File.Exists(asm64BitFile))
+            {
+                File.Delete(asm64BitFile);
+            }
+            Trace.WriteLine($"Asm = {asm64BitFile}");
+            var creator = new AssemblyCreator().CreateAssembly(
+                asm64BitFile,
+                portableExecutableKinds: System.Reflection.PortableExecutableKinds.PE32Plus, // 64 bit
+                imageFileMachine: ImageFileMachine.AMD64,
+                AdditionalAssemblyPaths: string.Empty,
+                logOutput: true
+                );
+            var args = $@"""{Assembly.GetAssembly(typeof(OutOfProc)).Location
+                               }"" {nameof(OutOfProc)} {
+                                   nameof(OutOfProc.MyMainMethod)} {pidClient}";
+            Trace.WriteLine($"args = {args}");
+            var p64 = Process.Start(
+                asm64BitFile,
+                args);
+            return p64;
+//            p64.WaitForExit(30 * 1000);
+        }
+        /// <summary>
+        /// This runs in the 64 bit server process
+        /// </summary>
+        public static async Task MyMainMethod(int pidClient)
+        {
+            var cts = new CancellationTokenSource();
+            using (var oop = new OutOfProc(pidClient, cts.Token))
+            {
+                Trace.WriteLine($"{nameof(oop.DoServerLoopAsync)} start");
+                await oop.DoServerLoopAsync();
+                Trace.WriteLine("{nameof(oop.DoServerLoopAsync)} done");
+            }
+            Trace.WriteLine($"End of OOP loop");
+        }
+        public async Task DoServerLoopAsync()
         {
             try
             {
@@ -116,11 +157,19 @@ namespace MapFileDict
                                     receivedQuit = true;
                                     break;
                                 case Verbs.verbGetLog:
-                                    Trace.WriteLine($"Server: Getlog #entries = {mylistener.lstLoggedStrings.Count}");
-                                    var strlog = string.Join("\r\n     ServerLog::", mylistener.lstLoggedStrings);
-                                    mylistener.lstLoggedStrings.Clear();
-                                    var buf = Encoding.ASCII.GetBytes(strlog);
-                                    Marshal.Copy(buf, 0, mappedSection, buf.Length);
+                                    if (mylistener != null)
+                                    {
+                                        Trace.WriteLine($"Server: Getlog #entries = {mylistener.lstLoggedStrings.Count}");
+                                        var strlog = string.Join("\r\n   ", mylistener.lstLoggedStrings);
+                                        mylistener.lstLoggedStrings.Clear();
+                                        var buf = Encoding.ASCII.GetBytes("     ServerLog::" + strlog);
+                                        Marshal.Copy(buf, 0, mappedSection, buf.Length);
+                                    }
+                                    else
+                                    {
+                                        var buf = Encoding.ASCII.GetBytes("No Logs because in proc");
+                                        Marshal.Copy(buf, 0, mappedSection, buf.Length);
+                                    }
                                     await pipeServer.SendAckAsync();
                                     break;
                                 case Verbs.verbStringSharedMem:
@@ -172,7 +221,7 @@ namespace MapFileDict
             }
             if (pidClient != Process.GetCurrentProcess().Id)
             {
-                Environment.Exit(0);
+                //                Environment.Exit(0);
             }
         }
 
@@ -180,6 +229,7 @@ namespace MapFileDict
         {
             mmfView.Dispose();
             mmf.Dispose();
+            mylistener?.Dispose();
         }
     }
     public class MyTraceListener : TextWriterTraceListener
@@ -195,6 +245,13 @@ namespace MapFileDict
                  DateTime.Now.ToString("hh:mm:ss:fff")
                  ) + $"{Thread.CurrentThread.ManagedThreadId,2} ";
             lstLoggedStrings.Add(dt + str);
+        }
+        protected override void Dispose(bool disposing)
+        {
+            base.Dispose(disposing);
+            var outfile = Environment.ExpandEnvironmentVariables(@"%USERPROFILE%\Desktop\TestOutput.txt");
+            var leftovers = string.Join("\r\n     ", lstLoggedStrings);
+            File.AppendAllText(outfile, "LeftOverLogs\r\n     " + leftovers + "\r\n");
         }
     }
     public static class ExtensionMethods
