@@ -7,6 +7,8 @@ using System.IO.Pipes;
 using System.Linq;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Runtime.Serialization;
+using System.Runtime.Serialization.Formatters.Binary;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -23,6 +25,40 @@ namespace MapFileDict
         verbSpeedTest,
         verbRequestData, // len = 1 byte: 0 args
         verbSendObjAndReferences, // a single obj and a list of it's references
+    }
+
+    [Serializable]
+    class ObjAndRefs : ISerializable
+    {
+        public ulong obj;
+        public List<ulong> lstRefs = new List<ulong>();
+        public ObjAndRefs()
+        {
+
+        }
+        protected ObjAndRefs(SerializationInfo info, StreamingContext context)
+        {
+            obj = info.GetUInt64("obj");
+            var cnt = info.GetInt32("cntRefs");
+            for (int i = 0; i < cnt; i++)
+            {
+                lstRefs.Add(info.GetUInt64($"i{i}"));
+            }
+        }
+        public void GetObjectData(SerializationInfo info, StreamingContext context)
+        {
+            info.AddValue("obj", obj);
+            info.AddValue("cntRefs", lstRefs.Count);
+            for (int i = 0; i < lstRefs.Count; i++)
+            {
+                info.AddValue($"i{i}", lstRefs[i]);
+            }
+        }
+
+        public override string ToString()
+        {
+            return $"{obj:x8}  {string.Join(",", lstRefs.ToArray())}";
+        }
     }
     public class OutOfProc : IDisposable
     {
@@ -141,6 +177,8 @@ namespace MapFileDict
                     using (var ctsReg = token.Register(
                            () => { pipeServer.Disconnect(); Trace.WriteLine("Cancel: disconnect pipe"); }))
                     {
+                        var dictObjRef = new Dictionary<ulong, ObjAndRefs>();
+
                         while (!receivedQuit)
                         {
                             if (token.IsCancellationRequested)
@@ -155,6 +193,18 @@ namespace MapFileDict
                                     await pipeServer.SendAckAsync();
                                     Trace.WriteLine($"Server got quit message");
                                     receivedQuit = true;
+                                    break;
+                                case Verbs.verbSendObjAndReferences:
+                                    //var b = new BinaryFormatter();
+                                    //var objAndRef = b.Deserialize(pipeServer) as ObjAndRefs;
+                                    //dictObjRef[objAndRef.obj] = objAndRef;
+                                    //Trace.WriteLine($"Server got {nameof(Verbs.verbSendObjAndReferences)}  {objAndRef}");
+                                    for (int i = 0; i < 10; i++)
+                                    {
+                                        pipeServer.ReadByte();
+                                    }
+                                    await pipeServer.SendAckAsync();
+
                                     break;
                                 case Verbs.verbGetLog:
                                     if (mylistener != null)
@@ -231,6 +281,15 @@ namespace MapFileDict
             mmf.Dispose();
             mylistener?.Dispose();
         }
+
+        internal async Task<string> GetLogFromServer(NamedPipeClientStream pipeClient)
+        {
+            Trace.WriteLine($"getting log from server");
+            pipeClient.WriteByte((byte)Verbs.verbGetLog);
+            await pipeClient.GetAckAsync();
+            var logstrs = Marshal.PtrToStringAnsi(mappedSection);
+            return logstrs;
+        }
     }
     public class MyTraceListener : TextWriterTraceListener
     {
@@ -270,6 +329,21 @@ namespace MapFileDict
             {
                 Trace.Write($"Didn't get Expected Ack");
             }
+        }
+        /// <summary>
+        /// Sends verb and waits for ack
+        /// </summary>
+        public static async Task SendVerb(this PipeStream pipe, Verbs verb, Func<Task> funcAsync = null)
+        {
+            var verbBuf = new byte[2];
+            Trace.WriteLine($"Client: sending {verb}");
+            verbBuf[0] = (byte)verb;
+            await pipe.WriteAsync(verbBuf, 0, 1);
+            if (funcAsync != null)
+            {
+                await funcAsync();
+            }
+            await pipe.GetAckAsync();
         }
     }
 }

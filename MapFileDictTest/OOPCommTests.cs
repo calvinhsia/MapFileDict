@@ -1,9 +1,11 @@
 ﻿using MapFileDict;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO.Pipes;
 using System.Runtime.InteropServices;
+using System.Runtime.Serialization.Formatters.Binary;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -13,14 +15,54 @@ namespace MapFileDictTest
     [TestClass]
     public class OOPCommTests : MyTestBase
     {
+
         [TestMethod]
         public async Task OOPSendAndQuery()
         {
-            await Task.Yield();
             try
             {
-                //var pidClient = Process.GetCurrentProcess().Id;
-                //var procServer = OutOfProc.CreateServer(pidClient);
+                await Task.Yield();
+                var pidClient = Process.GetCurrentProcess().Id;
+                var procServer = OutOfProc.CreateServer(pidClient);
+                await DoServerStuff(procServer, pidClient, async (pipeClient, oop) =>
+                 {
+                     // foreach obj, send obj and list of objs referenced by it
+                     // format: all longs:
+                     //   0 : the obj
+                     //   1 : # of references
+                     //   
+                     // obj of 0 indicates end of list
+                     int numObjs = 10;
+                     for (uint iObj = 0; iObj < numObjs; iObj++)
+                     {
+                         await pipeClient.SendVerb(Verbs.verbSendObjAndReferences, async () =>
+                          {
+                              for (int i = 0; i < 10; i++)
+                              {
+                                  pipeClient.WriteByte((byte)i);
+                              }
+                              //await pipeClient.WriteByte()
+                              //for (int i = 0; i < numObjs; i++)
+                              //{
+                              var x = new ObjAndRefs()
+                              {
+                                  obj = 1 + iObj
+                              };
+                              x.lstRefs.Add(2 + iObj * 10);
+
+                              x.lstRefs.Add(3 + iObj * 10);
+
+                              var b = new BinaryFormatter();
+                              Trace.Write($"client sending {nameof(Verbs.verbSendObjAndReferences)} {x}");
+//                              b.Serialize(pipeClient, x);
+                              //}
+                              await Task.Yield();
+                          });
+                     }
+                     Trace.WriteLine($"Got log from server\r\n" + await oop.GetLogFromServer(pipeClient));
+
+                     await pipeClient.SendVerb(Verbs.verbQuit);
+                 });
             }
             catch (Exception ex)
             {
@@ -50,14 +92,16 @@ namespace MapFileDictTest
         [TestMethod]
         public async Task OOPTestConsoleApp()
         {
-            var consapp = "ConsoleAppTest.exe";
             var pidClient = Process.GetCurrentProcess().Id;
-
+            var consapp = "ConsoleAppTest.exe";
             var procServer = Process.Start(consapp, $"{pidClient}");
             Trace.WriteLine($"Client: started server {procServer.Id}");
-            await DoTheGenericServerStuffAsync(pidClient, procServer);
+            await DoTestServerStuffAsync(pidClient, procServer);
 
             VerifyLogStrings(@"
+Got log from server
+Server Trace Listener created
+Server: Getlog #entries
 IntPtr.Size = 4 Shared Memory region address
 IntPtr.Size = 8 Shared Memory region address
 ");
@@ -70,7 +114,7 @@ IntPtr.Size = 8 Shared Memory region address
 
             var procServer = OutOfProc.CreateServer(pidClient);
             Trace.WriteLine($"Client: started server PidClient={pidClient} PidServer={procServer.Id}");
-            await DoTheGenericServerStuffAsync(pidClient, procServer);
+            await DoTestServerStuffAsync(pidClient, procServer);
 
             VerifyLogStrings(@"
 IntPtr.Size = 4 Shared Memory region address
@@ -78,7 +122,7 @@ IntPtr.Size = 8 Shared Memory region address
 ");
         }
 
-        private async Task DoTheGenericServerStuffAsync(int pidClient, Process procServer)
+        private async Task DoTestServerStuffAsync(int pidClient, Process procServer)
         {
             await DoServerStuff(procServer, pidClient, async (pipeClient, oop) =>
             {
@@ -102,11 +146,7 @@ IntPtr.Size = 8 Shared Memory region address
                 var logstrs = Marshal.PtrToStringAnsi(oop.mappedSection);
                 Trace.WriteLine($"Got log from server\r\n" + logstrs);
 
-
-                Trace.WriteLine($"Client: sending quit");
-                verb[0] = (byte)Verbs.verbQuit;
-                await pipeClient.WriteAsync(verb, 0, 1);
-                await pipeClient.GetAckAsync();
+                await pipeClient.SendVerb(Verbs.verbQuit);
             });
         }
 
@@ -185,6 +225,28 @@ sent message..requesting data
                 options: PipeOptions.Asynchronous))
             {
                 await pipeClient.ConnectAsync(cts.Token);
+
+                //                await pipeClient.SendVerb(Verbs.verbSendObjAndReferences, async () =>
+                //                 {
+                ////                     int numObjs = 10000;
+                //                          //await pipeClient.WriteByte()
+                //                          //for (int i = 0; i < numObjs; i++)
+                //                          //{
+                //                          var x = new ObjAndRefs()
+                //                     {
+                //                         obj = 1
+                //                     };
+                //                     x.lstRefs.Add(2);
+                //                     x.lstRefs.Add(3);
+                //                     Trace.Write($"client sending {nameof(Verbs.verbSendObjAndReferences)} {x}");
+
+                //                     var b = new BinaryFormatter();
+                //                     b.Serialize(pipeClient, x);
+                //                          //}
+                //                          await Task.Yield();
+                //                 });
+
+
                 var verb = new byte[2] { 1, 1 };
                 for (int i = 0; i < 5; i++)
                 {
@@ -227,20 +289,14 @@ sent message..requesting data
                     var bps = (double)oop.chunkSize * nIter / sw.Elapsed.TotalSeconds;
                     Trace.WriteLine($"BytesPerSec = {bps:n0}"); // 1.4 G/Sec
                 }
-//                if (oop.option == OOPOption.InProcTestLogging)
+                //                if (oop.option == OOPOption.InProcTestLogging)
                 {
-                    Trace.WriteLine($"getting log from server");
-                    verb[0] = (byte)Verbs.verbGetLog;
-                    await pipeClient.WriteAsync(verb, 0, 1);
-                    await pipeClient.GetAckAsync();
-                    var logstrs = Marshal.PtrToStringAnsi(oop.mappedSection);
-                    Trace.WriteLine($"Got log from server\r\n" + logstrs);
+
+                    Trace.WriteLine($"Got log from server\r\n" + await oop.GetLogFromServer(pipeClient));
 
                 }
-                Trace.WriteLine($"Client: sending quit");
-                verb[0] = (byte)Verbs.verbQuit;
-                await pipeClient.WriteAsync(verb, 0, 1);
-                await pipeClient.GetAckAsync();
+                Trace.WriteLine("Client: sending quit");
+                await pipeClient.SendVerb(Verbs.verbQuit);
             }
         }
     }
