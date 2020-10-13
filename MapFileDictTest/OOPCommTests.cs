@@ -18,13 +18,17 @@ namespace MapFileDictTest
     {
 
         [TestMethod]
-        public async Task OOPSendAndQuery()
+        public async Task OOPSendObjRefs()
         {
             try
             {
                 await Task.Yield();
                 var pidClient = Process.GetCurrentProcess().Id;
+                //*
                 var procServer = OutOfProc.CreateServer(pidClient);
+                /*/
+                var procServer = Process.Start("ConsoleAppTest.exe", $"{pidClient}");
+                 //*/
                 await DoServerStuff(procServer, pidClient, async (pipeClient, oop) =>
                  {
                      // foreach obj, send obj and list of objs referenced by it
@@ -33,38 +37,77 @@ namespace MapFileDictTest
                      //   1 : # of references
                      //   
                      // obj of 0 indicates end of list
-                     int numObjs = 10000;
+                     int numObjs = 1000000;
+                     Trace.WriteLine($"Client: sending {numObjs} objs");
+                     var sw = Stopwatch.StartNew();
+                     pipeClient.WriteByte((byte)Verbs.verbSendObjAndReferences);
                      for (uint iObj = 0; iObj < numObjs; iObj++)
                      {
                          var x = new ObjAndRefs()
                          {
                              obj = 1 + iObj
                          };
+                         x.lstRefs = new List<uint>();
                          x.lstRefs.Add(2 + iObj * 10);
 
                          x.lstRefs.Add(3 + iObj * 10);
-
-                         var b = new BinaryFormatter();
-                         unsafe
-                         {
-                             var mbytePtr = (byte*)oop.mappedSection.ToPointer();
-                             using (var ms = new UnmanagedMemoryStream(mbytePtr, oop.sharedMapSize, oop.sharedMapSize, FileAccess.ReadWrite))
-                             {
-                                 b.Serialize(ms, x);
-                             }
-                         }
-//                         Trace.Write($"client sending {nameof(Verbs.verbSendObjAndReferences)} {x}");
-                         await pipeClient.SendVerb(Verbs.verbSendObjAndReferences);
+                         x.SerializeToPipe(pipeClient);
                      }
+                     pipeClient.WriteUInt32(0);
+                     await pipeClient.GetAckAsync();
+                     Trace.WriteLine($"Sent {numObjs} Objs/Sec = {numObjs / sw.Elapsed.TotalSeconds:n2}"); // 5k/sec
                      Trace.WriteLine($"Got log from server\r\n" + await oop.GetLogFromServer(pipeClient));
-
-                     await pipeClient.SendVerb(Verbs.verbQuit);
                  });
             }
             catch (Exception ex)
             {
                 Trace.WriteLine(ex.ToString());
                 throw;
+            }
+        }
+        [TestMethod]
+        public async Task OOPSendObjRefsInProc()
+        {
+            var cts = new CancellationTokenSource();
+            using (var oop = new OutOfProc(Process.GetCurrentProcess().Id, cts.Token, ChunkSize: 1024 * 1024 * 1024))
+            {
+                Trace.WriteLine($"Mapped Section {oop.mappedSection} 0x{oop.mappedSection.ToInt32():x8}");
+
+                var taskServer = oop.DoServerLoopAsync();
+
+                var taskClient = DoTestClientAsync(oop, async (pipeClient) =>
+                {
+                    int numObjs = 10000;
+                    Trace.WriteLine($"Client: sending {numObjs} objs");
+                    var sw = Stopwatch.StartNew();
+                    pipeClient.WriteByte((byte)Verbs.verbSendObjAndReferences);
+                    for (uint iObj = 0; iObj < numObjs; iObj++)
+                    {
+                        var x = new ObjAndRefs()
+                        {
+                            obj = 1 + iObj
+                        };
+                        x.lstRefs = new List<uint>();
+                        x.lstRefs.Add(2 + iObj * 10);
+
+                        x.lstRefs.Add(3 + iObj * 10);
+                        x.SerializeToPipe(pipeClient);
+                    }
+                    pipeClient.WriteUInt32(0);
+                    await pipeClient.GetAckAsync();
+                    Trace.WriteLine($"Sent {numObjs} Objs/Sec = {numObjs / sw.Elapsed.TotalSeconds:n2}"); // 5k/sec
+                                                                                                          //                    Trace.WriteLine($"Got log from server\r\n" + await oop.GetLogFromServer(pipeClient));
+                });
+                var tskDelay = Task.Delay(TimeSpan.FromSeconds(Debugger.IsAttached ? 3000 : 20));
+                await Task.WhenAny(new[] { tskDelay, taskClient });
+                if (tskDelay.IsCompleted)
+                {
+                    Trace.WriteLine($"Delay completed: cancelling server");
+                    cts.Cancel();
+                }
+                await taskServer;
+                Trace.WriteLine($"Done");
+                Assert.IsTrue(taskServer.IsCompleted);
             }
         }
 
@@ -125,7 +168,7 @@ IntPtr.Size = 8 Shared Memory region address
             {
                 //                    await Task.Delay(5000);
                 var verb = new byte[2] { 1, 1 };
-
+//                await Task.Delay(10000);
                 for (int i = 0; i < 5; i++)
                 {
                     verb[0] = (byte)Verbs.verbRequestData;
@@ -143,7 +186,6 @@ IntPtr.Size = 8 Shared Memory region address
                 var logstrs = Marshal.PtrToStringAnsi(oop.mappedSection);
                 Trace.WriteLine($"Got log from server\r\n" + logstrs);
 
-                await pipeClient.SendVerb(Verbs.verbQuit);
             });
         }
 
@@ -164,8 +206,10 @@ IntPtr.Size = 8 Shared Memory region address
                     await pipeClient.ConnectAsync(cts.Token);
                     Trace.WriteLine($"Client: connected");
                     await func(pipeClient, oop);
+                    await pipeClient.SendVerb((byte)Verbs.verbQuit);
                 }
             }
+            var didKill = false;
             while (!procServer.HasExited)
             {
                 Trace.WriteLine($"Waiting for cons app to exit");
@@ -174,24 +218,29 @@ IntPtr.Size = 8 Shared Memory region address
                 {
                     Trace.WriteLine($"Killing server process");
                     procServer.Kill();
+                    didKill = true;
                     break;
                 }
             }
             Trace.WriteLine($"Done in {sw.Elapsed.TotalSeconds:n2}");
+            Assert.IsFalse(didKill, "Had to kill server");
         }
+
 
         [TestMethod]
         public async Task OOPTestInProc()
         {
             var cts = new CancellationTokenSource();
-            using (var oop = new OutOfProc(Process.GetCurrentProcess().Id, cts.Token))
+            using (var oop = new OutOfProc(Process.GetCurrentProcess().Id, cts.Token, ChunkSize: 1024 * 1024 * 1024))
             {
-                oop.SetChunkSize(1024 * 1024 * 1024);
                 Trace.WriteLine($"Mapped Section {oop.mappedSection} 0x{oop.mappedSection.ToInt32():x8}");
 
                 var taskServer = oop.DoServerLoopAsync();
 
-                var taskClient = DoTestClientAsync(oop);
+                var taskClient = DoTestClientAsync(oop, async (pipeClient) =>
+                {
+                    await DoBasicCommTests(oop, pipeClient, cts.Token);
+                });
                 var tskDelay = Task.Delay(TimeSpan.FromSeconds(Debugger.IsAttached ? 3000 : 30));
                 await Task.WhenAny(new[] { tskDelay, taskClient });
                 if (tskDelay.IsCompleted)
@@ -210,8 +259,7 @@ Server got quit message
 sent message..requesting data
 ");
         }
-
-        private async Task DoTestClientAsync(OutOfProc oop)
+        private async Task DoTestClientAsync(OutOfProc oop, Func<NamedPipeClientStream, Task> actionAsync)
         {
             Trace.WriteLine("Starting Client");
             var cts = new CancellationTokenSource();
@@ -221,85 +269,72 @@ sent message..requesting data
                 direction: PipeDirection.InOut,
                 options: PipeOptions.Asynchronous))
             {
-                await pipeClient.ConnectAsync(cts.Token);
-
-                int numObjs = 1024;
-                for (uint iObj = 0; iObj < numObjs; iObj++)
+                try
                 {
-                    var x = new ObjAndRefs()
-                    {
-                        obj = 1 + iObj
-                    };
-                    x.lstRefs.Add(2 + iObj * 10);
-
-                    x.lstRefs.Add(3 + iObj * 10);
-
-                    var b = new BinaryFormatter();
-                    unsafe
-                    {
-                        var mbytePtr = (byte*)oop.mappedSection.ToPointer();
-                        using (var ms = new UnmanagedMemoryStream(mbytePtr, oop.sharedMapSize, oop.sharedMapSize, FileAccess.ReadWrite))
-                        {
-                            b.Serialize(ms, x);
-                        }
-                    }
-                    //                         Trace.Write($"client sending {nameof(Verbs.verbSendObjAndReferences)} {x}");
-                    await pipeClient.SendVerb(Verbs.verbSendObjAndReferences);
+                    await pipeClient.ConnectAsync(cts.Token);
+                    await actionAsync(pipeClient);
+                    Trace.WriteLine("Client: sending quit");
+                    await pipeClient.SendVerb((byte)Verbs.verbQuit);
                 }
-
-
-
-                var verb = new byte[2] { 1, 1 };
-                for (int i = 0; i < 5; i++)
+                catch (Exception ex)
                 {
-                    {
-                        var strBuf = Encoding.ASCII.GetBytes($"MessageString {i}");
-                        var buf = new byte[strBuf.Length + 1];
-                        buf[0] = (byte)Verbs.verbString;
-                        Array.Copy(strBuf, 0, buf, 1, strBuf.Length);
-                        Trace.WriteLine("Client: sending message");
-                        await pipeClient.WriteAsync(buf, 0, buf.Length);
-                        Trace.WriteLine($"Client: sent message..requesting data");
-                    }
-                    {
-                        var strBuf = Encoding.ASCII.GetBytes($"StrSharedMem {i}");
-                        verb[0] = (byte)Verbs.verbStringSharedMem;
-                        Marshal.WriteInt32(oop.mappedSection, strBuf.Length);
-                        Marshal.Copy(strBuf, 0, oop.mappedSection + IntPtr.Size, strBuf.Length);
-                        await pipeClient.WriteAsync(verb, 0, 1);
-                    }
-                    {
-                        verb[0] = (byte)Verbs.verbRequestData;
-                        await pipeClient.WriteAsync(verb, 0, 1);
-                        var bufReq = new byte[100];
-                        var buflen = await pipeClient.ReadAsync(bufReq, 0, bufReq.Length);
-                        var readStr = Encoding.ASCII.GetString(bufReq, 0, buflen);
-                        Trace.WriteLine($"Client req data from server: {readStr}");
-                    }
+                    Trace.WriteLine(ex.ToString());
+                    throw;
                 }
-                {
-                    // speedtest
-                    var nIter = 10;
-                    var bufSpeed = new byte[oop.chunkSize];
-                    bufSpeed[0] = (byte)Verbs.verbSpeedTest;
-                    var sw = Stopwatch.StartNew();
-                    for (int iter = 0; iter < nIter; iter++)
-                    {
-                        Trace.WriteLine($"Sending chunk {iter}");
-                        await pipeClient.WriteAsync(bufSpeed, 0, bufSpeed.Length);
-                    }
-                    var bps = (double)oop.chunkSize * nIter / sw.Elapsed.TotalSeconds;
-                    Trace.WriteLine($"BytesPerSec = {bps:n0}"); // 1.4 G/Sec
-                }
-                //                if (oop.option == OOPOption.InProcTestLogging)
-                {
-
-                    Trace.WriteLine($"Got log from server\r\n" + await oop.GetLogFromServer(pipeClient));
-
-                }
-                Trace.WriteLine("Client: sending quit");
-                await pipeClient.SendVerb(Verbs.verbQuit);
             }
         }
+        async Task DoBasicCommTests(OutOfProc oop, NamedPipeClientStream pipeClient, CancellationToken token)
+        {
+            var verb = new byte[2] { 1, 1 };
+            for (int i = 0; i < 5; i++)
+            {
+                {
+                    var strBuf = Encoding.ASCII.GetBytes($"MessageString {i}");
+                    var buf = new byte[strBuf.Length + 1];
+                    buf[0] = (byte)Verbs.verbString;
+                    Array.Copy(strBuf, 0, buf, 1, strBuf.Length);
+                    Trace.WriteLine("Client: sending message");
+                    await pipeClient.WriteAsync(buf, 0, buf.Length);
+                    Trace.WriteLine($"Client: sent message..requesting data");
+                }
+                {
+                    var strBuf = Encoding.ASCII.GetBytes($"StrSharedMem {i}");
+                    verb[0] = (byte)Verbs.verbStringSharedMem;
+                    Marshal.WriteInt32(oop.mappedSection, strBuf.Length);
+                    Marshal.Copy(strBuf, 0, oop.mappedSection + IntPtr.Size, strBuf.Length);
+                    await pipeClient.WriteAsync(verb, 0, 1);
+                }
+                {
+                    verb[0] = (byte)Verbs.verbRequestData;
+                    await pipeClient.WriteAsync(verb, 0, 1);
+                    var bufReq = new byte[100];
+                    var buflen = await pipeClient.ReadAsync(bufReq, 0, bufReq.Length);
+                    var readStr = Encoding.ASCII.GetString(bufReq, 0, buflen);
+                    Trace.WriteLine($"Client req data from server: {readStr}");
+                }
+            }
+            {
+                // speedtest
+                var nIter = 10;
+                var bufSpeed = new byte[oop.chunkSize];
+                bufSpeed[0] = (byte)Verbs.verbSpeedTest;
+                var sw = Stopwatch.StartNew();
+                for (int iter = 0; iter < nIter; iter++)
+                {
+                    Trace.WriteLine($"Sending chunk {iter}");
+                    await pipeClient.WriteAsync(bufSpeed, 0, bufSpeed.Length);
+                }
+                var bps = (double)oop.chunkSize * nIter / sw.Elapsed.TotalSeconds;
+                Trace.WriteLine($"BytesPerSec = {bps:n0}"); // 1.4 G/Sec
+            }
+            //                if (oop.option == OOPOption.InProcTestLogging)
+            {
+
+                Trace.WriteLine($"Got log from server\r\n" + await oop.GetLogFromServer(pipeClient));
+
+            }
+
+        }
+
     }
 }

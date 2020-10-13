@@ -12,6 +12,7 @@ using System.Runtime.Serialization.Formatters.Binary;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Windows.Threading;
 
 namespace MapFileDict
 {
@@ -28,36 +29,69 @@ namespace MapFileDict
     }
 
     [Serializable]
-    class ObjAndRefs : ISerializable
+    class ObjAndRefs// : ISerializable
     {
-        public ulong obj;
-        public List<ulong> lstRefs = new List<ulong>();
+        public uint obj;
+        public List<uint> lstRefs; // since many objs don't ref things (like strings),then we'll allow NULL here
         public ObjAndRefs()
         {
 
         }
-        protected ObjAndRefs(SerializationInfo info, StreamingContext context)
+        // our own customs serialization is far faster
+        // 1st send the objaddr
+        // 2nd send the # of refs
+        // 3+ send each ref
+        public void SerializeToPipe(PipeStream pipe)
         {
-            obj = info.GetUInt64("obj");
-            var cnt = info.GetInt32("cntRefs");
+            pipe.WriteUInt32(obj);
+            var cnt = lstRefs == null ? 0 : lstRefs.Count;
+            pipe.WriteUInt32((uint)cnt);
             for (int i = 0; i < cnt; i++)
             {
-                lstRefs.Add(info.GetUInt64($"i{i}"));
+                pipe.WriteUInt32(lstRefs[i]);
             }
         }
-        public void GetObjectData(SerializationInfo info, StreamingContext context)
+        public static ObjAndRefs CreateFromPipe(PipeStream pipe)
         {
-            info.AddValue("obj", obj);
-            info.AddValue("cntRefs", lstRefs.Count);
-            for (int i = 0; i < lstRefs.Count; i++)
+            var o = new ObjAndRefs();
+            o.obj = pipe.ReadUInt32();
+            if (o.obj != 0)
             {
-                info.AddValue($"i{i}", lstRefs[i]);
+                var cnt = pipe.ReadUInt32();
+                if (cnt > 0)
+                {
+                    o.lstRefs = new List<uint>();
+                    for (int i = 0; i < cnt; i++)
+                    {
+                        o.lstRefs.Add(pipe.ReadUInt32());
+                    }
+                }
             }
+            return o;
         }
+        //protected ObjAndRefs(SerializationInfo info, StreamingContext context)
+        //{
+        //    obj = info.GetUInt64("obj");
+        //    var cnt = info.GetInt32("cntRefs");
+        //    for (int i = 0; i < cnt; i++)
+        //    {
+        //        lstRefs.Add(info.GetUInt64($"i{i}"));
+        //    }
+        //}
+        //public void GetObjectData(SerializationInfo info, StreamingContext context)
+        //{
+        //    info.AddValue("obj", obj);
+        //    info.AddValue("cntRefs", lstRefs.Count);
+        //    for (int i = 0; i < lstRefs.Count; i++)
+        //    {
+        //        info.AddValue($"i{i}", lstRefs[i]);
+        //    }
+        //}
 
         public override string ToString()
         {
-            return $"{obj:x8}  {string.Join(",", lstRefs.ToArray())}";
+            var refs = lstRefs == null ? string.Empty : string.Join(",", lstRefs.ToArray());
+            return $"{obj:x8}  {refs}";
         }
     }
     public class OutOfProc : IDisposable
@@ -74,19 +108,21 @@ namespace MapFileDict
         private int pidClient;
         private MyTraceListener mylistener;
 
-        public OutOfProc() // need a parameterless constructor 
+        public OutOfProc() // need a parameterless constructor for Activator
         {
 
         }
-        public OutOfProc(int PidClient, CancellationToken token)
+        public OutOfProc(int PidClient, CancellationToken token, int ChunkSize = 10)
         {
-            this.Initialize(PidClient, token);
+            this.Initialize(PidClient, token, ChunkSize);
         }
 
-        private void Initialize(int pidClient, CancellationToken token)
+        private void Initialize(int pidClient, CancellationToken token, int ChunkSize)
         {
             this.token = token;
             this.pidClient = pidClient;
+            this.chunkSize = ChunkSize;
+            speedBuf = new byte[ChunkSize];
             if (pidClient != Process.GetCurrentProcess().Id)
             {
                 mylistener = new MyTraceListener();
@@ -108,15 +144,10 @@ namespace MapFileDict
                size: 0,
                access: MemoryMappedFileAccess.ReadWrite);
             mappedSection = mmfView.SafeMemoryMappedViewHandle.DangerousGetHandle();
-            Trace.WriteLine($"IntPtr.Size = {IntPtr.Size} Shared Memory region address {mappedSection.ToInt64():x16}");
+            Trace.WriteLine($"{Process.GetCurrentProcess().ProcessName} IntPtr.Size = {IntPtr.Size} Shared Memory region address {mappedSection.ToInt64():x16}");
             speedBuf = new byte[chunkSize];
         }
 
-        internal void SetChunkSize(int newsize)
-        {
-            this.chunkSize = newsize;
-            speedBuf = new byte[chunkSize];
-        }
         public static Process CreateServer(int pidClient)
         {
             var asm64BitFile = new FileInfo(Path.ChangeExtension("tempasm", ".exe")).FullName;
@@ -147,14 +178,21 @@ namespace MapFileDict
         /// </summary>
         public static async Task MyMainMethod(int pidClient)
         {
-            var cts = new CancellationTokenSource();
-            using (var oop = new OutOfProc(pidClient, cts.Token))
+            var tcsStaThread = new TaskCompletionSource<int>();
+            var execContext = CreateExecutionContext(tcsStaThread);
+            await execContext.Dispatcher.InvokeAsync(async () =>
             {
-                Trace.WriteLine($"{nameof(oop.DoServerLoopAsync)} start");
-                await oop.DoServerLoopAsync();
-                Trace.WriteLine("{nameof(oop.DoServerLoopAsync)} done");
-            }
-            Trace.WriteLine($"End of OOP loop");
+                var cts = new CancellationTokenSource();
+                using (var oop = new OutOfProc(pidClient, cts.Token))
+                {
+                    Trace.WriteLine($"{nameof(oop.DoServerLoopAsync)} start");
+                    await oop.DoServerLoopAsync();
+                    Trace.WriteLine("{nameof(oop.DoServerLoopAsync)} done");
+                }
+                Trace.WriteLine($"End of OOP loop");
+                tcsStaThread.SetResult(0);
+            });
+            await tcsStaThread.Task;
         }
         public async Task DoServerLoopAsync()
         {
@@ -187,77 +225,92 @@ namespace MapFileDict
                                 receivedQuit = true;
                             }
                             var nBytesRead = await pipeServer.ReadAsync(buff, 0, 1, token);
-                            switch ((Verbs)buff[0])
+                            try
                             {
-                                case Verbs.verbQuit:
-                                    Trace.WriteLine($"# dict entries = {dictObjRef.Count}");
-                                    await pipeServer.SendAckAsync();
-                                    Trace.WriteLine($"Server got quit message");
-                                    receivedQuit = true;
-                                    break;
-                                case Verbs.verbSendObjAndReferences:
-                                    var b = new BinaryFormatter();
-                                    unsafe
-                                    {
-                                        var mbPtr = (byte*)mappedSection.ToPointer();
-                                        using (var ms = new UnmanagedMemoryStream(mbPtr, sharedMapSize, sharedMapSize, FileAccess.ReadWrite))
-                                        {
-                                            var objAndRef = b.Deserialize(ms) as ObjAndRefs;
-                                            dictObjRef[objAndRef.obj] = objAndRef;
-//                                            Trace.WriteLine($"Server got {nameof(Verbs.verbSendObjAndReferences)}  {objAndRef}");
-                                        }
-
-                                    }
-                                    //var objAndRef = b.Deserialize(pipeServer) as ObjAndRefs;
-                                    //dictObjRef[objAndRef.obj] = objAndRef;
-                                    //Trace.WriteLine($"Server got {nameof(Verbs.verbSendObjAndReferences)}  {objAndRef}");
-                                    await pipeServer.SendAckAsync();
-
-                                    break;
-                                case Verbs.verbGetLog:
-                                    if (mylistener != null)
-                                    {
+                                switch ((Verbs)buff[0])
+                                {
+                                    case Verbs.verbQuit:
                                         Trace.WriteLine($"# dict entries = {dictObjRef.Count}");
-                                        Trace.WriteLine($"Server: Getlog #entries = {mylistener.lstLoggedStrings.Count}");
-                                        var strlog = string.Join("\r\n   ", mylistener.lstLoggedStrings);
-                                        mylistener.lstLoggedStrings.Clear();
-                                        var buf = Encoding.ASCII.GetBytes("     ServerLog::" + strlog);
-                                        Marshal.Copy(buf, 0, mappedSection, buf.Length);
-                                    }
-                                    else
-                                    {
-                                        var buf = Encoding.ASCII.GetBytes("No Logs because in proc");
-                                        Marshal.Copy(buf, 0, mappedSection, buf.Length);
-                                    }
-                                    await pipeServer.SendAckAsync();
-                                    break;
-                                case Verbs.verbStringSharedMem:
-                                    var len = Marshal.ReadIntPtr(mappedSection);
-                                    var str = Marshal.PtrToStringAnsi(mappedSection + IntPtr.Size, len.ToInt32());
-                                    Trace.WriteLine($"Server: SharedMemStr {str}");
-                                    break;
-                                case Verbs.verbString:
-                                    var lstBytes = new List<byte>();
-                                    while (!pipeServer.IsMessageComplete)
-                                    {
-                                        var byt = pipeServer.ReadByte();
-                                        lstBytes.Add((byte)byt);
-                                    }
-                                    var strRead = Encoding.ASCII.GetString(lstBytes.ToArray());
-                                    Trace.WriteLine($"Server Got str {strRead}");
-                                    break;
-                                case Verbs.verbRequestData:
-                                    var strToSend = $"Server: {DateTime.Now}";
-                                    var strB = Encoding.ASCII.GetBytes(strToSend);
-                                    Trace.WriteLine($"Server: req data {strToSend}");
-                                    await pipeServer.WriteAsync(strB, 0, strB.Length);
-                                    break;
-                                case Verbs.verbSpeedTest:
-                                    {
-                                        await pipeServer.ReadAsync(speedBuf, 0, chunkSize - 1);
-                                        Trace.WriteLine($"Server: got bytes {chunkSize:n0}");
-                                    }
-                                    break;
+                                        await pipeServer.SendAckAsync();
+                                        Trace.WriteLine($"Server got quit message");
+                                        receivedQuit = true;
+                                        break;
+                                    case Verbs.verbSendObjAndReferences:
+                                        //var b = new BinaryFormatter();
+                                        //unsafe
+                                        //{
+                                        //    var mbPtr = (byte*)mappedSection.ToPointer();
+                                        //    using (var ms = new UnmanagedMemoryStream(mbPtr, sharedMapSize, sharedMapSize, FileAccess.ReadWrite))
+                                        //    {
+                                        //        var objAndRef = b.Deserialize(ms) as ObjAndRefs;
+                                        //        dictObjRef[objAndRef.obj] = objAndRef;
+                                        //        //                                            Trace.WriteLine($"Server got {nameof(Verbs.verbSendObjAndReferences)}  {objAndRef}");
+                                        //    }
+
+                                        //}
+                                        while (true)
+                                        {
+                                            var objAndRef = ObjAndRefs.CreateFromPipe(pipeServer);
+                                            if (objAndRef.obj == 0)
+                                            {
+                                                break;
+                                            }
+                                            dictObjRef[objAndRef.obj] = objAndRef;
+                                        }
+                                        await pipeServer.SendAckAsync();
+
+                                        break;
+                                    case Verbs.verbGetLog:
+                                        if (mylistener != null)
+                                        {
+                                            Trace.WriteLine($"# dict entries = {dictObjRef.Count}");
+                                            Trace.WriteLine($"Server: Getlog #entries = {mylistener.lstLoggedStrings.Count}");
+                                            var strlog = string.Join("\r\n   ", mylistener.lstLoggedStrings);
+                                            mylistener.lstLoggedStrings.Clear();
+                                            var buf = Encoding.ASCII.GetBytes("     ServerLog::" + strlog);
+                                            Marshal.Copy(buf, 0, mappedSection, buf.Length);
+                                        }
+                                        else
+                                        {
+                                            var buf = Encoding.ASCII.GetBytes("No Logs because in proc");
+                                            Marshal.Copy(buf, 0, mappedSection, buf.Length);
+                                        }
+                                        await pipeServer.SendAckAsync();
+                                        break;
+                                    case Verbs.verbStringSharedMem:
+                                        var len = Marshal.ReadIntPtr(mappedSection);
+                                        var str = Marshal.PtrToStringAnsi(mappedSection + IntPtr.Size, len.ToInt32());
+                                        Trace.WriteLine($"Server: SharedMemStr {str}");
+                                        break;
+                                    case Verbs.verbString:
+                                        var lstBytes = new List<byte>();
+                                        while (!pipeServer.IsMessageComplete)
+                                        {
+                                            var byt = pipeServer.ReadByte();
+                                            lstBytes.Add((byte)byt);
+                                        }
+                                        var strRead = Encoding.ASCII.GetString(lstBytes.ToArray());
+                                        Trace.WriteLine($"Server Got str {strRead}");
+                                        break;
+                                    case Verbs.verbRequestData:
+                                        var strToSend = $"Server: {DateTime.Now}";
+                                        var strB = Encoding.ASCII.GetBytes(strToSend);
+                                        Trace.WriteLine($"Server: req data {strToSend}");
+                                        await pipeServer.WriteAsync(strB, 0, strB.Length);
+                                        break;
+                                    case Verbs.verbSpeedTest:
+                                        {
+                                            await pipeServer.ReadAsync(speedBuf, 0, chunkSize - 1);
+                                            Trace.WriteLine($"Server: got bytes {chunkSize:n0}");
+                                        }
+                                        break;
+                                }
+
+                            }
+                            catch (Exception ex)
+                            {
+                                mylistener?.ForceAddToLog(ex.ToString());
+                                throw;
                             }
                         }
                     }
@@ -272,6 +325,11 @@ namespace MapFileDict
             {
                 Trace.WriteLine("Server: cancelled");
             }
+            catch (Exception ex)
+            {
+                mylistener?.ForceAddToLog(ex.ToString());
+                throw;
+            }
 
             Trace.WriteLine("Server: exiting servertask");
             if (mylistener != null)
@@ -280,7 +338,7 @@ namespace MapFileDict
             }
             if (pidClient != Process.GetCurrentProcess().Id)
             {
-                //                Environment.Exit(0);
+                Environment.Exit(0);
             }
         }
 
@@ -299,6 +357,48 @@ namespace MapFileDict
             var logstrs = Marshal.PtrToStringAnsi(mappedSection);
             return logstrs;
         }
+        static MyExecutionContext CreateExecutionContext(TaskCompletionSource<int> tcsStaThread)
+        {
+            const string Threadname = "MyStaThread";
+            var tcsGetExecutionContext = new TaskCompletionSource<MyExecutionContext>();
+
+            Trace.WriteLine($"Creating {Threadname}");
+            var myStaThread = new Thread(() =>
+            {
+                // Create the context, and install it:
+                Trace.WriteLine($"{Threadname} start");
+                var dispatcher = Dispatcher.CurrentDispatcher;
+                var syncContext = new DispatcherSynchronizationContext(dispatcher);
+
+                SynchronizationContext.SetSynchronizationContext(syncContext);
+
+                tcsGetExecutionContext.SetResult(new MyExecutionContext
+                {
+                    DispatcherSynchronizationContext = syncContext,
+                    Dispatcher = dispatcher
+                });
+
+                // Start the Dispatcher Processing
+                Trace.WriteLine($"MyStaThread before Dispatcher.run");
+                Dispatcher.Run();
+                Trace.WriteLine($"MyStaThread After Dispatcher.run");
+                tcsStaThread.SetResult(0);
+            })
+            {
+
+                //            myStaThread.SetApartmentState(ApartmentState.STA);
+                Name = Threadname
+            };
+            myStaThread.Start();
+            Trace.WriteLine($"Starting {Threadname}");
+            return tcsGetExecutionContext.Task.Result;
+        }
+
+        public class MyExecutionContext
+        {
+            public DispatcherSynchronizationContext DispatcherSynchronizationContext { get; set; }
+            public Dispatcher Dispatcher { get; set; }
+        }
     }
     public class MyTraceListener : TextWriterTraceListener
     {
@@ -314,12 +414,47 @@ namespace MapFileDict
                  ) + $"{Thread.CurrentThread.ManagedThreadId,2} ";
             lstLoggedStrings.Add(dt + str);
         }
+
         protected override void Dispose(bool disposing)
         {
             base.Dispose(disposing);
-            var outfile = Environment.ExpandEnvironmentVariables(@"%USERPROFILE%\Desktop\TestOutput.txt");
             var leftovers = string.Join("\r\n     ", lstLoggedStrings);
-            File.AppendAllText(outfile, "LeftOverLogs\r\n     " + leftovers + "\r\n");
+
+            ForceAddToLog("LeftOverLogs\r\n     " + leftovers + "\r\n");
+        }
+
+        internal void ForceAddToLog(string str)
+        {
+            var outfile = Environment.ExpandEnvironmentVariables(@"%USERPROFILE%\Desktop\TestOutput.txt");
+            var leftovers = string.Join("\r\n     ", lstLoggedStrings) + "\r\n" + str;
+            lstLoggedStrings.Clear();
+            OutputToLogFileWithRetryAsync(() =>
+            {
+                File.AppendAllText(outfile, str + "\r\n");
+            });
+        }
+        public void OutputToLogFileWithRetryAsync(Action actWrite)
+        {
+            var nRetry = 0;
+            var success = false;
+            while (nRetry++ < 10)
+            {
+                try
+                {
+                    actWrite();
+                    success = true;
+                    break;
+                }
+                catch (IOException)
+                {
+                }
+
+                Task.Delay(TimeSpan.FromSeconds(0.3)).Wait();
+            }
+            if (!success)
+            {
+                Trace.WriteLine($"Error writing to log #retries ={nRetry}");
+            }
         }
     }
     public static class ExtensionMethods
@@ -342,16 +477,36 @@ namespace MapFileDict
         /// <summary>
         /// Sends verb and waits for ack
         /// </summary>
-        public static async Task SendVerb(this PipeStream pipe, Verbs verb, Func<Task> funcAsync = null)
+        public static async Task SendVerb(this PipeStream pipe, Verbs verb)
         {
             var verbBuf = new byte[2];
             verbBuf[0] = (byte)verb;
             await pipe.WriteAsync(verbBuf, 0, 1);
-            if (funcAsync != null)
-            {
-                await funcAsync();
-            }
             await pipe.GetAckAsync();
+        }
+        public static void WriteUInt32(this PipeStream pipe, uint addr)
+        {
+            var buf = BitConverter.GetBytes(addr);
+            pipe.Write(buf, 0, buf.Length);
+        }
+        public static void WriteUInt64(this PipeStream pipe, UInt64 addr)
+        {
+            var buf = BitConverter.GetBytes(addr);
+            pipe.Write(buf, 0, buf.Length);
+        }
+        public static uint ReadUInt32(this PipeStream pipe)
+        {
+            var buf = new byte[4];
+            pipe.Read(buf, 0, buf.Length);
+            var res = BitConverter.ToUInt32(buf, 0);
+            return res;
+        }
+        public static ulong ReadUInt64(this PipeStream pipe)
+        {
+            var buf = new byte[8];
+            pipe.Read(buf, 0, buf.Length);
+            var res = BitConverter.ToUInt64(buf, 0);
+            return res;
         }
     }
 }

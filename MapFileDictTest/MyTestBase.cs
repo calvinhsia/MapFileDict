@@ -82,7 +82,7 @@ namespace MapFileDictTest
             OutputToLogFileWithRetryAsync(() =>
             {
                 File.WriteAllText(LogFileName, string.Empty);
-            }).Wait();
+            }, testContext).Wait();
             File.Delete(LogFileName);
             Trace.Listeners.Clear(); // else Debug.Writeline can cause infinite recursion because the Test runner adds a listener.
             Trace.Listeners.Add(this);
@@ -111,7 +111,7 @@ namespace MapFileDictTest
                             }
                             if (lstBatch.Count > 0)
                             {
-                                await this.OutputToLogFileWithRetryAsync(() =>
+                                await MyTextWriterTraceListener.OutputToLogFileWithRetryAsync(() =>
                                 {
                                     File.AppendAllLines(LogFileName, lstBatch);
                                 });
@@ -179,7 +179,7 @@ namespace MapFileDictTest
             }
         }
 
-        public async Task OutputToLogFileWithRetryAsync(Action actWrite)
+        public static async Task OutputToLogFileWithRetryAsync(Action actWrite, TestContext tcontext= null)
         {
             var nRetry = 0;
             var success = false;
@@ -198,7 +198,7 @@ namespace MapFileDictTest
             }
             if (!success)
             {
-                testContext.WriteLine($"Error writing to log #retries ={nRetry}");
+                tcontext?.WriteLine($"Error writing to log #retries ={nRetry}");
             }
         }
 
