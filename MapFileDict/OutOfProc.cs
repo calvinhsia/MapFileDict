@@ -18,8 +18,8 @@ namespace MapFileDict
 {
     public enum Verbs
     {
-        verbQuit, // len =1 byte: 0 args
-        verbAck, // acknowledge
+        ServerQuit, // len =1 byte: 0 args
+        Acknowledge, // acknowledge receipt of verb
         verbGetLog,
         verbString, // 
         verbStringSharedMem,
@@ -72,29 +72,6 @@ namespace MapFileDict
                 }
             }
             return o;
-        }
-        public static Dictionary<uint, List<uint>> GetDictObjsFromPipe(PipeStream pipe)
-        {
-            var dictObjRef = new Dictionary<uint, List<uint>>();
-            while (true)
-            {
-                var lst = new List<uint>();
-                var obj = pipe.ReadUInt32();
-                if (obj == 0)
-                {
-                    break;
-                }
-                var cnt = pipe.ReadUInt32();
-                if (cnt > 0)
-                {
-                    for (int i = 0; i < cnt; i++)
-                    {
-                        lst.Add(pipe.ReadUInt32());
-                    }
-                }
-                dictObjRef[obj] = lst;
-            }
-            return dictObjRef;
         }
 
         //protected ObjAndRefs(SerializationInfo info, StreamingContext context)
@@ -258,7 +235,7 @@ namespace MapFileDict
                             {
                                 switch ((Verbs)buff[0])
                                 {
-                                    case Verbs.verbQuit:
+                                    case Verbs.ServerQuit:
                                         Trace.WriteLine($"# dict entries = {dictObjRef.Count}");
                                         await pipeServer.SendAckAsync();
                                         Trace.WriteLine($"Server got quit message");
@@ -277,9 +254,21 @@ namespace MapFileDict
                                         //    }
 
                                         //}
-                                        dictObjRef = ObjAndRefs.GetDictObjsFromPipe(pipeServer);
+                                        {
+                                            var lst = new List<uint>();
+                                            var obj = pipeServer.ReadUInt32();
+                                            var cnt = pipeServer.ReadUInt32();
+                                            if (cnt > 0)
+                                            {
+                                                for (int i = 0; i < cnt; i++)
+                                                {
+                                                    lst.Add(pipeServer.ReadUInt32());
+                                                }
+                                            }
+                                            dictObjRef[obj] = lst;
+                                            Trace.WriteLine($"Server got {nameof(Verbs.verbSendObjAndReferences)}  {obj:x8} # child = {cnt:n8}");
+                                        }
                                         await pipeServer.SendAckAsync();
-
                                         break;
                                     case Verbs.verbSendObjAndReferencesChunks:
                                         {
@@ -319,10 +308,14 @@ namespace MapFileDict
                                         var objQuery = pipeServer.ReadUInt32();
                                         if (dictInverted.TryGetValue(objQuery, out var lstParents))
                                         {
-                                            Trace.WriteLine($"Server: {objQuery:x8}  NumParents={lstParents.Count}");
-                                            foreach (var parent in lstParents)
+                                            var numParents = lstParents?.Count;
+                                            Trace.WriteLine($"Server: {objQuery:x8}  NumParents={numParents}");
+                                            if (numParents > 0)
                                             {
-                                                pipeServer.WriteUInt32(parent);
+                                                foreach (var parent in lstParents)
+                                                {
+                                                    pipeServer.WriteUInt32(parent);
+                                                }
                                             }
                                         }
                                         pipeServer.WriteUInt32(0); // terminator
@@ -371,12 +364,19 @@ namespace MapFileDict
                                             Trace.WriteLine($"Server: got bytes {SpeedBufSize:n0}");
                                         }
                                         break;
+                                    default:
+                                        Trace.WriteLine($"Received unknown Verb: this indicates a violation of pipe communications. Comm is broken, so terminating");
+                                        throw new Exception($"Received unknown Verb {buff[0]}");
                                 }
                             }
                             catch (Exception ex)
                             {
-                                Trace.WriteLine(ex.ToString());
+                                Trace.WriteLine($"Exception: terminating process: " + ex.ToString());
                                 mylistener?.ForceAddToLog(ex.ToString());
+                                if (pidClient != Process.GetCurrentProcess().Id)
+                                {
+                                    Environment.Exit(0);
+                                }
                                 throw;
                             }
                         }
@@ -563,14 +563,14 @@ namespace MapFileDict
         public static async Task SendAckAsync(this PipeStream pipe)
         {
             var verb = new byte[2];
-            verb[0] = (byte)Verbs.verbAck;
+            verb[0] = (byte)Verbs.Acknowledge;
             await pipe.WriteAsync(verb, 0, 1);
         }
         public static async Task GetAckAsync(this PipeStream pipe)
         {
             var buff = new byte[10];
             var len = await pipe.ReadAsync(buff, 0, 1);
-            if (len != 1 || buff[0] != (byte)Verbs.verbAck)
+            if (len != 1 || buff[0] != (byte)Verbs.Acknowledge)
             {
                 Trace.Write($"Didn't get Expected Ack");
             }
@@ -580,9 +580,7 @@ namespace MapFileDict
         /// </summary>
         public static async Task SendVerb(this PipeStream pipe, Verbs verb)
         {
-            var verbBuf = new byte[2];
-            verbBuf[0] = (byte)verb;
-            await pipe.WriteAsync(verbBuf, 0, 1);
+            pipe.WriteByte((byte)verb);
             await pipe.GetAckAsync();
         }
         public static void WriteUInt32(this PipeStream pipe, uint addr)
