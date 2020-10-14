@@ -173,6 +173,7 @@ Parents of WpfTextView   362b72e0
                     int numObjs = dictOGraph.Count;
                     Trace.WriteLine($"Client: sending {numObjs:n0} objs");
                     var sw = Stopwatch.StartNew();
+//                    await DoCreateSharedMemRegionAsync(pipeClient, oop, sharedRegionSize: 65536);
                     var numChunksSent = await SendObjGraphInChunksAsync(pipeClient, dictOGraph);
                     Trace.WriteLine($"Sent {numObjs}  #Chunks = {numChunksSent} Objs/Sec = {numObjs / sw.Elapsed.TotalSeconds:n2}"); // 5k/sec
 
@@ -183,7 +184,7 @@ Parents of WpfTextView   362b72e0
                     DoShowResultsFromQueryForParents(pipeClient, SystemStackOverflowException);
                     DoShowResultsFromQueryForParents(pipeClient, WpfTextView);
 
-                    Trace.WriteLine($"Got log from server\r\n" + await oop.GetLogFromServer(pipeClient));
+                    Trace.WriteLine($"Got log from server\r\n" + await GetLogFromServer(pipeClient, oop));
                 });
             }
             catch (Exception ex)
@@ -302,7 +303,6 @@ Parents of WpfTextView   362b72e0
             var dictOGraph = await ReadObjectGraphAsync(fnameObjectGraph);
             using (var oop = new OutOfProc(Process.GetCurrentProcess().Id, cts.Token))
             {
-                Trace.WriteLine($"Mapped Section {oop._MemoryMappedRegionAddress} 0x{oop._MemoryMappedRegionAddress.ToInt32():x8}");
 
                 var taskServer = oop.DoServerLoopAsync();
 
@@ -423,6 +423,7 @@ IntPtr.Size = 8 Shared Memory region address
         {
             await DoServerStuff(procServer, pidClient, async (pipeClient, oop) =>
             {
+                await DoCreateSharedMemRegionAsync(pipeClient, oop, sharedRegionSize: 65536U);
                 //                    await Task.Delay(5000);
                 var verb = new byte[2] { 1, 1 };
                 //                await Task.Delay(10000);
@@ -490,7 +491,6 @@ IntPtr.Size = 8 Shared Memory region address
             var cts = new CancellationTokenSource();
             using (var oop = new OutOfProc(Process.GetCurrentProcess().Id, cts.Token))
             {
-                Trace.WriteLine($"Mapped Section {oop._MemoryMappedRegionAddress} 0x{oop._MemoryMappedRegionAddress.ToInt32():x8}");
 
                 var taskServer = oop.DoServerLoopAsync();
 
@@ -498,11 +498,12 @@ IntPtr.Size = 8 Shared Memory region address
                 {
                     await DoBasicCommTests(oop, pipeClient, cts.Token);
                 });
-                var tskDelay = Task.Delay(TimeSpan.FromSeconds(Debugger.IsAttached ? 3000 : 30));
+                var nDelaySecs = Debugger.IsAttached ? 3000 : 20;
+                var tskDelay = Task.Delay(TimeSpan.FromSeconds(nDelaySecs));
                 await Task.WhenAny(new[] { tskDelay, taskClient });
                 if (tskDelay.IsCompleted)
                 {
-                    Trace.WriteLine($"Delay completed: cancelling server");
+                    Trace.WriteLine($"Delay {nDelaySecs} secs completed: cancelling server");
                     cts.Cancel();
                 }
                 await taskServer;
@@ -529,6 +530,9 @@ sent message..requesting data
                 try
                 {
                     await pipeClient.ConnectAsync(cts.Token);
+
+                    await DoCreateSharedMemRegionAsync(pipeClient, oop, 65536);
+
                     await actionAsync(pipeClient);
                     Trace.WriteLine("Client: sending quit");
                     await pipeClient.SendVerb((byte)Verbs.ServerQuit);
@@ -540,6 +544,15 @@ sent message..requesting data
                 }
             }
         }
+
+		private async Task DoCreateSharedMemRegionAsync(NamedPipeClientStream pipeClient, OutOfProc oop, uint sharedRegionSize)
+        {
+            pipeClient.WriteByte((byte)Verbs.CreateSharedMemSection); //ask the server to create a shared region
+            pipeClient.WriteUInt32(sharedRegionSize);
+            var memRegionName = await pipeClient.ReadStringAsAsciiAsync();
+            oop.CreateSharedSection(memRegionName, sharedRegionSize); // now map that region into the client
+        }
+
         async Task DoBasicCommTests(OutOfProc oop, NamedPipeClientStream pipeClient, CancellationToken token)
         {
             var verb = new byte[2] { 1, 1 };
@@ -579,7 +592,7 @@ sent message..requesting data
                 for (int iter = 0; iter < nIter; iter++)
                 {
                     Trace.WriteLine($"Sending buf {bufSize:n0} Iter={iter}");
-                    pipeClient.WriteByte((byte)Verbs.GetSpeedTest);
+                    pipeClient.WriteByte((byte)Verbs.DoSpeedTest);
                     pipeClient.WriteUInt32((uint)bufSize);
                     await pipeClient.WriteAsync(bufSpeed, 0, bufSpeed.Length);
                     await pipeClient.GetAckAsync();
@@ -590,11 +603,22 @@ sent message..requesting data
             //                if (oop.option == OOPOption.InProcTestLogging)
             {
 
-                Trace.WriteLine($"Got log from server\r\n" + await oop.GetLogFromServer(pipeClient));
-
+                Trace.WriteLine($"Got log from server\r\n" + await GetLogFromServer(pipeClient, oop));
             }
 
         }
+        internal async Task<string> GetLogFromServer(NamedPipeClientStream pipeClient, OutOfProc oop)
+        {
+            Trace.WriteLine($"getting log from server");
+            if (!oop.IsSharedRegionCreated())
+            {
+                await DoCreateSharedMemRegionAsync(pipeClient, oop, sharedRegionSize: 65536);
+            }
 
+            pipeClient.WriteByte((byte)Verbs.GetLog);
+            await pipeClient.GetAckAsync();
+            var logstrs = Marshal.PtrToStringAnsi(oop._MemoryMappedRegionAddress);
+            return logstrs;
+        }
     }
 }
