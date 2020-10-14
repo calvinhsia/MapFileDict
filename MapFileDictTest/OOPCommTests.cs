@@ -205,7 +205,7 @@ Parents of WpfTextView   362b72e0
 				{
 					var sw = Stopwatch.StartNew();
 					var ienumOGraph = GetObjectGraphIEnumerable();
-					var tup = await SendObjGraphEnumerableInChunksAsync(pipeClient, ienumOGraph);
+					var tup = await oop.SendObjGraphEnumerableInChunksAsync(pipeClient, ienumOGraph);
 					int numObjs = tup.Item1;
 					var numChunksSent = tup.Item2;
 					// the timing includes parsing the text file for obj graph
@@ -234,78 +234,6 @@ WpfTextView 362b72e0  has 221 parents
 ");
 		}
 
-		private async Task<Tuple<int, int>> SendObjGraphEnumerableInChunksAsync(NamedPipeClientStream pipeClient, IEnumerable<Tuple<uint, List<uint>>> ienumOGraph)
-		{
-			var bufChunkSize = 65536;
-			var bufChunk = new byte[bufChunkSize + 4]; // leave extra room for null term
-			int ndxbufChunk = 0;
-			var numChunksSent = 0;
-			var numObjs = 0;
-			foreach (var tup in ienumOGraph)
-			{
-				numObjs++;
-				var numChildren = tup.Item2?.Count ?? 0;
-				var numBytesForThisObj = (1 + 1 + numChildren) * IntPtr.Size; // obj + childCount + children
-				if (numBytesForThisObj >= bufChunkSize)
-				{
-					await SendBufferAsync(); // empty it
-					ndxbufChunk = 0;
-					bufChunkSize = numBytesForThisObj;
-					bufChunk = new byte[numBytesForThisObj + 4];
-					// 0450ee60 Roslyn.Utilities.StringTable+Entry[]
-					// 0460eea0 Microsoft.CodeAnalysis.VisualBasic.Syntax.InternalSyntax.SyntaxNodeCache+Entry[]
-					// 049b90e0 Microsoft.CodeAnalysis.SyntaxNode[]
-					Trace.WriteLine($"The cur obj {tup.Item1:x8} size={numBytesForThisObj} is too big for chunk {bufChunkSize}: sending via non-chunk");
-					pipeClient.WriteByte((byte)Verbs.SendObjAndReferences);
-					pipeClient.WriteUInt32(tup.Item1);
-					pipeClient.WriteUInt32((uint)numChildren);
-
-					for (int iChild = 0; iChild < numChildren; iChild++)
-					{
-						pipeClient.WriteUInt32(tup.Item2[iChild]);
-					}
-					await pipeClient.GetAckAsync();
-				}
-				if (ndxbufChunk + numBytesForThisObj >= bufChunk.Length) // too big for cur buf?
-				{
-					await SendBufferAsync(); // empty it
-					ndxbufChunk = 0;
-				}
-				{
-					var b1 = BitConverter.GetBytes(tup.Item1);
-					Array.Copy(b1, 0, bufChunk, ndxbufChunk, b1.Length);
-					ndxbufChunk += b1.Length;
-
-					b1 = BitConverter.GetBytes(numChildren);
-					Array.Copy(b1, 0, bufChunk, ndxbufChunk, b1.Length);
-					ndxbufChunk += b1.Length;
-					for (int iChild = 0; iChild < numChildren; iChild++)
-					{
-						b1 = BitConverter.GetBytes(tup.Item2[iChild]);
-						Array.Copy(b1, 0, bufChunk, ndxbufChunk, b1.Length);
-						ndxbufChunk += b1.Length;
-					}
-				}
-			}
-			if (ndxbufChunk > 0) // leftovers
-			{
-				Trace.WriteLine($"Client: send leftovers {ndxbufChunk}");
-				await SendBufferAsync();
-			}
-			return Tuple.Create<int, int>(numObjs, numChunksSent);
-			async Task SendBufferAsync()
-			{
-				bufChunk[ndxbufChunk++] = 0; // null terminating int32
-				bufChunk[ndxbufChunk++] = 0;
-				bufChunk[ndxbufChunk++] = 0;
-				bufChunk[ndxbufChunk++] = 0;
-				pipeClient.WriteByte((byte)Verbs.SendObjAndReferencesInChunks);
-				pipeClient.WriteUInt32((uint)ndxbufChunk); // size of buf
-				pipeClient.Write(bufChunk, 0, ndxbufChunk);
-				await pipeClient.GetAckAsync();
-				numChunksSent++;
-			}
-		}
 
 		[TestMethod]
 		public async Task OOPSendObjRefsInProc()
@@ -320,7 +248,7 @@ WpfTextView 362b72e0  has 221 parents
 				{
 					var sw = Stopwatch.StartNew();
 					var ienumOGraph = GetObjectGraphIEnumerable();
-					var tup = await SendObjGraphEnumerableInChunksAsync(pipeClient, ienumOGraph);
+					var tup = await oop.SendObjGraphEnumerableInChunksAsync(pipeClient, ienumOGraph);
 					int numObjs = tup.Item1;
 					var numChunksSent = tup.Item2;
 					// the timing includes parsing the text file for obj graph
