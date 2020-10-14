@@ -181,8 +181,8 @@ Parents of WpfTextView   362b72e0
                     await pipeClient.GetAckAsync();
                     Trace.WriteLine($"Inverted Dictionary");
 
-                    DoShowResultsFromQueryForParents(pipeClient, SystemStackOverflowException);
-                    DoShowResultsFromQueryForParents(pipeClient, WpfTextView);
+                    DoShowResultsFromQueryForParents(pipeClient, SystemStackOverflowException, nameof(SystemStackOverflowException));
+                    DoShowResultsFromQueryForParents(pipeClient, WpfTextView, nameof(WpfTextView));
 
                     Trace.WriteLine($"Got log from server\r\n" + await GetLogFromServer(pipeClient, oop));
                 });
@@ -195,8 +195,8 @@ Parents of WpfTextView   362b72e0
             VerifyLogStrings(@"
 IntPtr.Size = 8 Shared Memory region
 # dict entries = 1223023
-362b72e0 has 0 parents
-362b72e0 has 221 parents
+SystemStackOverflowException 362b72e0  has 0 parents
+WpfTextView 362b72e0  has 221 parents
 ");
         }
 
@@ -323,9 +323,9 @@ IntPtr.Size = 8 Shared Memory region
                     pipeClient.WriteByte((byte)Verbs.CreateInvertedDictionary);
                     await pipeClient.GetAckAsync();
                     Trace.WriteLine($"Inverted Dictionary");
-                    DoShowResultsFromQueryForParents(pipeClient, SystemStackOverflowException);
+                    DoShowResultsFromQueryForParents(pipeClient, SystemStackOverflowException, nameof(SystemStackOverflowException));
 
-                    DoShowResultsFromQueryForParents(pipeClient, WpfTextView);
+                    DoShowResultsFromQueryForParents(pipeClient, WpfTextView, nameof(WpfTextView)) ;
                 });
                 var delaySecs = Debugger.IsAttached ? 3000 : 60;
                 var tskDelay = Task.Delay(TimeSpan.FromSeconds(delaySecs));
@@ -344,14 +344,14 @@ IntPtr.Size = 8 Shared Memory region
 # dict entries = 1223023
 ");
         }
-        private void DoShowResultsFromQueryForParents(NamedPipeClientStream pipeClient, uint objId)
+        private void DoShowResultsFromQueryForParents(NamedPipeClientStream pipeClient, uint objId, string desc)
         {
             var lstParents = QueryServerForParent(pipeClient, objId);
-            Trace.WriteLine($"{WpfTextView:x8} has {lstParents.Count} parents");
+            Trace.WriteLine($"{desc} {WpfTextView:x8}  has {lstParents.Count} parents");
 
             foreach (var parent in lstParents.Take(20))
             {
-                Trace.WriteLine($"A Parent of {objId:x8} is {parent:x8}");
+                Trace.WriteLine($"A Parent of {desc} {objId:x8} is {parent:x8}");
             }
         }
 

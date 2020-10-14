@@ -355,7 +355,7 @@ namespace MapFileDict
 		}
 		public static Dictionary<uint, List<uint>> InvertDictionary(Dictionary<uint, List<uint>> dictOGraph)
 		{
-			var dictInvert = new Dictionary<uint, List<uint>>(); // obj ->list of objs that reference it
+			var dictInvert = new Dictionary<uint, List<uint>>(capacity: dictOGraph.Count); // obj ->list of objs that reference it
 																 // the result will be a dict of every object, with a value of a List of all the objects referring to it.
 																 // thus looking for parents of a particular obj will be fast.
 
