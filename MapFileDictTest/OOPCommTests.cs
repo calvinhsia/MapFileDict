@@ -8,6 +8,7 @@ using System.IO.Pipes;
 using System.Runtime.InteropServices;
 using System.Runtime.Serialization.Formatters.Binary;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -16,6 +17,146 @@ namespace MapFileDictTest
     [TestClass]
     public class OOPCommTests : MyTestBase
     {
+        string fnameObjectGraph = @"c:\users\calvinh\Desktop\ObjGraph.txt"; // 2.1Megs from "VSDbgData\VSDbgTestDumps\MSSln22611\MSSln22611.dmp
+        [TestMethod]
+        public async Task OOPGetObjectGraph()
+        {
+            var dictOGraph = await ReadObjectGraphAsync(fnameObjectGraph);
+
+            Dictionary<uint, List<uint>> dictInvert = ObjAndRefs.InvertDictionary(dictOGraph);
+
+            Trace.WriteLine($"Inverted dict {dictInvert.Count:n0}"); // System.Object, String.Empty have the most parents: e.g. 0xaaaa
+            //362b72e0  Microsoft.VisualStudio.Text.Editor.Implementation.WpfTextView   (
+            //    3629712c  Microsoft.VisualStudio.Text.Implementation.TextBuffer
+
+            void ShowParents(uint obj, string desc)
+            {
+                var lstTxtBuffer = dictInvert[obj];
+                Trace.WriteLine($"Parents of {desc}   {obj:x8}");
+                foreach (var itm in lstTxtBuffer)
+                {
+                    Trace.WriteLine($"   {itm:x8}");
+                }
+            }
+            ShowParents(0x362b72e0, "WpfTextView");
+            ShowParents(0x3629712c, "TextBuffer");
+            VerifyLogStrings(@"
+Parents of WpfTextView   362b72e0
+03b17f7c
+1173a870
+3618b1e4
+");
+            // 03b17f7c  System.Windows.EffectiveValueEntry[]
+            // 1173a870 Microsoft.VisualStudio.Text.Editor.ITextView[]
+            //1173aa68 Microsoft.VisualStudio.Text.Editor.IWpfTextView[]
+            // 3618b1e4 Microsoft.VisualStudio.Editor.Implementation.VsCodeWindowAdapter
+        }
+
+        private async Task<Dictionary<uint,List<uint>>> ReadObjectGraphAsync(string fnameObjectGraph)
+        {
+            /*
+                        {
+                            var sb = new StringBuilder();
+                            foreach (var entry in _heap.EnumerateObjectAddresses())
+                            {
+                                var candidateObjEntry = entry;
+                                var candType = _heap.GetObject(candidateObjEntry).Type;
+                                if (candType != null)
+                                {
+                                    var clrObj = new ClrObject(candidateObjEntry, candType);
+                                    sb.AppendLine($"{clrObj.Address:x8} {candType}");
+                                    foreach (var oidChild in clrObj.EnumerateObjectReferences())
+                                    {
+                                        var childType = _heap.GetObject(oidChild).Type;
+                                        sb.AppendLine($"   {oidChild.Address:x8}  {childType}");
+                                    }
+                                }
+                            }
+                            File.AppendAllText(@"c:\users\calvinh\Desktop\objgraph.txt", sb.ToString());
+                        }
+
+            12075104 Microsoft.Build.Construction.XmlAttributeWithLocation
+               120750d4  Microsoft.Build.Construction.XmlElementWithLocation
+               12074540  System.Xml.XmlName
+               1207511c  System.Xml.XmlText
+               12123cc0  Microsoft.Build.Construction.ElementLocation+SmallElementLocation
+            1207511c System.Xml.XmlText
+               12075104  Microsoft.Build.Construction.XmlAttributeWithLocation
+               1207511c  System.Xml.XmlText
+               1207502c  System.String
+            12075130 Microsoft.Build.Construction.XmlAttributeWithLocation
+               120750d4  Microsoft.Build.Construction.XmlElementWithLocation
+               12074f5c  System.Xml.XmlName
+               120751cc  System.Xml.XmlText
+               12075148  Microsoft.Build.Construction.ElementLocation+SmallElementLocation
+            12075148 Microsoft.Build.Construction.ElementLocation+SmallElementLocation
+               03461228  System.String
+            12075158 System.String
+            120751c0 Free
+            120751cc System.Xml.XmlText
+               12075130  Microsoft.Build.Construction.XmlAttributeWithLocation
+               120751cc  System.Xml.XmlText
+               12075158  System.String
+            120751e0 System.Collections.ArrayList
+               120751f8  System.Object[]
+            120751f8 System.Object[]
+               12075104  Microsoft.Build.Construction.XmlAttributeWithLocation
+               12075130  Microsoft.Build.Construction.XmlAttributeWithLocation
+            12075214 Microsoft.Build.Construction.ElementLocation+SmallElementLocation
+               120739c4  System.String
+            12075224 System.String
+            120752a0 Microsoft.Build.Construction.ElementLocation+SmallElementLocation
+               120739c4  System.String
+            120752b0 Microsoft.Build.Construction.ProjectElement+WrapperForProjectRootElement
+               12073a68  Microsoft.Build.Construction.ProjectRootElement
+            120752dc System.Xml.XmlAttributeCollection
+               120743c8  Microsoft.Build.Construction.XmlElementWithLocation
+            120752ec Microsoft.Build.Construction.ProjectPropertyGroupElement
+               12073a68  Microsoft.Build.Construction.ProjectRootElement
+               03461228  System.String
+               120754b4  Microsoft.Build.Construction.ProjectImportElement
+               120743c8  Microsoft.Build.Construction.XmlElementWithLocation
+               12075324  Microsoft.Build.Construction.ProjectPropertyElement
+               12075488  Microsoft.Build.Construction.ProjectPropertyElement
+            12075314 Microsoft.Build.Construction.ElementLocation+SmallElementLocation
+               120739c4  System.String
+            */
+            var dictOGraph = new Dictionary<uint, List<uint>>();
+            int nObjsWithAtLeastOneKid = 0;
+            int nChildObjs = 0;
+            using (var fs = new StreamReader(fnameObjectGraph))
+            {
+                List<uint> lstChildren = null;
+                var curObjId = 0U;
+                while (!fs.EndOfStream)
+                {
+                    var line = await fs.ReadLineAsync();
+                    var lineParts = line.Split(" ".ToCharArray(), StringSplitOptions.RemoveEmptyEntries);
+                    var oidTemp = uint.Parse(lineParts[0].Trim(), System.Globalization.NumberStyles.AllowHexSpecifier);
+                    if (!line.StartsWith(" "))
+                    {
+                        lstChildren = null;
+                        dictOGraph[oidTemp] = lstChildren;
+                        curObjId = oidTemp;
+                    }
+                    else
+                    {
+                        if (lstChildren == null)
+                        {
+                            nObjsWithAtLeastOneKid++;
+                            lstChildren = new List<uint>();
+                            dictOGraph[curObjId] = lstChildren;
+                        }
+                        nChildObjs++;
+                        lstChildren.Add(oidTemp);
+                    }
+                }
+            }
+            Trace.WriteLine($"Read {dictOGraph.Count:n0} objs. #Objs with at least 1 child = {nObjsWithAtLeastOneKid:n0}   TotalChildObjs = {nChildObjs:n0}");
+            // 12 secs to read in graph Read 1,223,023 objs. #Objs with at least 1 child = 914,729   TotalChildObjs = 2,901,660
+            return dictOGraph;
+        }
+
 
         [TestMethod]
         public async Task OOPSendObjRefs()
@@ -168,7 +309,7 @@ IntPtr.Size = 8 Shared Memory region address
             {
                 //                    await Task.Delay(5000);
                 var verb = new byte[2] { 1, 1 };
-//                await Task.Delay(10000);
+                //                await Task.Delay(10000);
                 for (int i = 0; i < 5; i++)
                 {
                     verb[0] = (byte)Verbs.verbRequestData;

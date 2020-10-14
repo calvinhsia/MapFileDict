@@ -69,6 +69,65 @@ namespace MapFileDict
             }
             return o;
         }
+        public static Dictionary<uint, List<uint>> GetDictObjsFromPipe(PipeStream pipe)
+        {
+            var dictObjRef = new Dictionary<uint, List<uint>>();
+            var lst = new List<uint>();
+            while (true)
+            {
+                var obj = pipe.ReadUInt32();
+                lst.Clear();
+                if (obj == 0)
+                {
+                    break;
+                }
+                var cnt = pipe.ReadUInt32();
+                if (cnt > 0)
+                {
+                    for (int i = 0; i < cnt; i++)
+                    {
+                        lst.Add(pipe.ReadUInt32());
+                    }
+                }
+                dictObjRef[obj] = lst;
+            }
+            return dictObjRef;
+        }
+        public static Dictionary<uint, List<uint>> InvertDictionary(Dictionary<uint, List<uint>> dictOGraph)
+        {
+            var dictInvert = new Dictionary<uint, List<uint>>(); // obj ->list of objs that reference it
+                                                                 // the result will be a dict of every object, with a value of a List of all the objects referring to it.
+                                                                 // thus looking for parents of a particular obj will be fast.
+
+            List<uint> AddObjToDict(uint obj)
+            {
+                if (!dictInvert.TryGetValue(obj, out var lstParents))
+                {
+                    dictInvert[obj] = null; // initially, this obj has no parents: we haven't seen it before
+                }
+                return lstParents;
+            }
+            foreach (var kvp in dictOGraph)
+            {
+                var lsto = AddObjToDict(kvp.Key);
+                if (kvp.Value != null)
+                {
+                    foreach (var oChild in kvp.Value)
+                    {
+                        var lstChildsParents = AddObjToDict(oChild);
+                        if (lstChildsParents == null)
+                        {
+                            lstChildsParents = new List<uint>();
+                            dictInvert[oChild] = lstChildsParents;
+                        }
+                        lstChildsParents.Add(kvp.Key);// set the parent of this child
+                    }
+                }
+            }
+
+            return dictInvert;
+        }
+
         //protected ObjAndRefs(SerializationInfo info, StreamingContext context)
         //{
         //    obj = info.GetUInt64("obj");
@@ -215,7 +274,7 @@ namespace MapFileDict
                     using (var ctsReg = token.Register(
                            () => { pipeServer.Disconnect(); Trace.WriteLine("Cancel: disconnect pipe"); }))
                     {
-                        var dictObjRef = new Dictionary<ulong, ObjAndRefs>();
+                        var dictObjRef = new Dictionary<uint, List<uint>>();
 
                         while (!receivedQuit)
                         {
@@ -248,15 +307,7 @@ namespace MapFileDict
                                         //    }
 
                                         //}
-                                        while (true)
-                                        {
-                                            var objAndRef = ObjAndRefs.CreateFromPipe(pipeServer);
-                                            if (objAndRef.obj == 0)
-                                            {
-                                                break;
-                                            }
-                                            dictObjRef[objAndRef.obj] = objAndRef;
-                                        }
+                                        dictObjRef = ObjAndRefs.GetDictObjsFromPipe(pipeServer);
                                         await pipeServer.SendAckAsync();
 
                                         break;
