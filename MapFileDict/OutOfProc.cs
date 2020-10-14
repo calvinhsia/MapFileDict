@@ -13,7 +13,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Threading;
-
+//https://github.com/calvinhsia/MapFileDict/blob/OutOfProc/MapFileDict/OutOfProc.cs
 namespace MapFileDict
 {
 	public enum Verbs
@@ -29,8 +29,8 @@ namespace MapFileDict
 		SendObjAndReferences, // a single obj and a list of it's references
 		SendObjAndReferencesInChunks, // yields perf gains: from 5k objs/sec to 1M/sec
 		CreateInvertedDictionary, // Create an inverte dict. From the dict of Obj=> list of child objs ref'd by the obj, it creates a new
-									// dict containing every objid: for each is a list of parent objs (those that ref the original obj)
-									// very useful for finding: e.g. who holds a reference to FOO
+								  // dict containing every objid: for each is a list of parent objs (those that ref the original obj)
+								  // very useful for finding: e.g. who holds a reference to FOO
 		QueryParentOfObject, // given an obj, get a list of objs that reference it
 	}
 
@@ -163,7 +163,7 @@ namespace MapFileDict
 									case Verbs.CreateSharedMemSection:
 										{
 											var sizeRegion = pipeServer.ReadUInt32();
-											CreateSharedSection( memRegionName: $"MapFileDictSharedMem_{pidClient}\0", sizeRegion);
+											CreateSharedSection(memRegionName: $"MapFileDictSharedMem_{pidClient}\0", regionSize: sizeRegion);
 											Trace.WriteLine($"{Process.GetCurrentProcess().ProcessName} IntPtr.Size = {IntPtr.Size} Shared Memory region address {_MemoryMappedRegionAddress.ToInt64():x16}");
 											await pipeServer.SendStringAsAsciiAsync(_sharedFileMapName);
 										}
@@ -356,8 +356,8 @@ namespace MapFileDict
 		public static Dictionary<uint, List<uint>> InvertDictionary(Dictionary<uint, List<uint>> dictOGraph)
 		{
 			var dictInvert = new Dictionary<uint, List<uint>>(capacity: dictOGraph.Count); // obj ->list of objs that reference it
-																 // the result will be a dict of every object, with a value of a List of all the objects referring to it.
-																 // thus looking for parents of a particular obj will be fast.
+																						   // the result will be a dict of every object, with a value of a List of all the objects referring to it.
+																						   // thus looking for parents of a particular obj will be fast.
 
 			List<uint> AddObjToDict(uint obj)
 			{
