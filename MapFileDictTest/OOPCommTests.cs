@@ -5,6 +5,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.IO.Pipes;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Runtime.Serialization.Formatters.Binary;
 using System.Text;
@@ -173,7 +174,6 @@ Parents of WpfTextView   362b72e0
                     int numObjs = dictOGraph.Count;
                     Trace.WriteLine($"Client: sending {numObjs:n0} objs");
                     var sw = Stopwatch.StartNew();
-//                    await DoCreateSharedMemRegionAsync(pipeClient, oop, sharedRegionSize: 65536);
                     var numChunksSent = await SendObjGraphInChunksAsync(pipeClient, dictOGraph);
                     Trace.WriteLine($"Sent {numObjs}  #Chunks = {numChunksSent} Objs/Sec = {numObjs / sw.Elapsed.TotalSeconds:n2}"); // 5k/sec
 
@@ -192,6 +192,12 @@ Parents of WpfTextView   362b72e0
                 Trace.WriteLine(ex.ToString());
                 throw;
             }
+            VerifyLogStrings(@"
+IntPtr.Size = 8 Shared Memory region
+# dict entries = 1223023
+362b72e0 has 0 parents
+362b72e0 has 221 parents
+");
         }
 
 
@@ -320,7 +326,6 @@ Parents of WpfTextView   362b72e0
                     DoShowResultsFromQueryForParents(pipeClient, SystemStackOverflowException);
 
                     DoShowResultsFromQueryForParents(pipeClient, WpfTextView);
-                    //                    Trace.WriteLine($"Got log from server\r\n" + await oop.GetLogFromServer(pipeClient));
                 });
                 var delaySecs = Debugger.IsAttached ? 3000 : 60;
                 var tskDelay = Task.Delay(TimeSpan.FromSeconds(delaySecs));
@@ -344,7 +349,7 @@ Parents of WpfTextView   362b72e0
             var lstParents = QueryServerForParent(pipeClient, objId);
             Trace.WriteLine($"{WpfTextView:x8} has {lstParents.Count} parents");
 
-            foreach (var parent in lstParents)
+            foreach (var parent in lstParents.Take(20))
             {
                 Trace.WriteLine($"A Parent of {objId:x8} is {parent:x8}");
             }
@@ -498,7 +503,7 @@ IntPtr.Size = 8 Shared Memory region address
                 {
                     await DoBasicCommTests(oop, pipeClient, cts.Token);
                 });
-                var nDelaySecs = Debugger.IsAttached ? 3000 : 20;
+                var nDelaySecs = Debugger.IsAttached ? 3000 : 50;
                 var tskDelay = Task.Delay(TimeSpan.FromSeconds(nDelaySecs));
                 await Task.WhenAny(new[] { tskDelay, taskClient });
                 if (tskDelay.IsCompleted)
@@ -585,7 +590,7 @@ sent message..requesting data
             }
             {
                 // speedtest
-                var nIter = 10U;
+                var nIter = 5U;
                 var bufSize = 1024 * 1024 * 1024;
                 var bufSpeed = new byte[bufSize];
                 var sw = Stopwatch.StartNew();

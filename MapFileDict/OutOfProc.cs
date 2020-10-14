@@ -18,18 +18,20 @@ namespace MapFileDict
 {
 	public enum Verbs
 	{
-		ServerQuit, // len =1 byte: 0 args
+		ServerQuit, // Quit the server process. Sends an Ack, so must wait for ack before done
 		Acknowledge, // acknowledge receipt of verb
 		CreateSharedMemSection, // create a region of memory that can be shared between the client/server
-		GetLog,
-		GetString, // 
-		GetStringSharedMem,
+		GetLog, // get server log entries: will clear all entries so far
+		GetString, // very slow
+		GetStringSharedMem, // faster
 		DoSpeedTest,
 		verbRequestData, // len = 1 byte: 0 args
 		SendObjAndReferences, // a single obj and a list of it's references
 		SendObjAndReferencesInChunks, // yields perf gains: from 5k objs/sec to 1M/sec
-		CreateInvertedDictionary,
-		QueryParentOfObject,
+		CreateInvertedDictionary, // Create an inverte dict. From the dict of Obj=> list of child objs ref'd by the obj, it creates a new
+									// dict containing every objid: for each is a list of parent objs (those that ref the original obj)
+									// very useful for finding: e.g. who holds a reference to FOO
+		QueryParentOfObject, // given an obj, get a list of objs that reference it
 	}
 
 	public class OutOfProc : IDisposable
@@ -72,7 +74,7 @@ namespace MapFileDict
 
 		public static Process CreateServer(int pidClient)
 		{
-			var asm64BitFile = new FileInfo(Path.ChangeExtension("tempasm", ".exe")).FullName;
+			var asm64BitFile = new FileInfo(Path.ChangeExtension(Path.GetTempFileName(), ".exe")).FullName;
 			if (File.Exists(asm64BitFile))
 			{
 				File.Delete(asm64BitFile);
@@ -238,7 +240,11 @@ namespace MapFileDict
 											var strlog = string.Join("\r\n   ", mylistener.lstLoggedStrings);
 											mylistener.lstLoggedStrings.Clear();
 											var buf = Encoding.ASCII.GetBytes("     ServerLog::" + strlog);
-											Marshal.Copy(buf, 0, _MemoryMappedRegionAddress, buf.Length);
+											if ((int)_sharedMapSize >= buf.Length)
+											{
+												Trace.WriteLine($"Log truncated"); //: get server log more often to reduce, or larger shared region size, or send as string or file or...
+											}
+											Marshal.Copy(buf, 0, _MemoryMappedRegionAddress, Math.Min((int)_sharedMapSize, buf.Length));
 										}
 										else
 										{
@@ -321,6 +327,9 @@ namespace MapFileDict
 				Environment.Exit(0);
 			}
 		}
+		/// <summary>
+		/// Called from both client and server. Given a name, 
+		/// </summary>
 		internal void CreateSharedSection(string memRegionName, uint regionSize)
 		{
 			if (Process.GetCurrentProcess().Id == pidClient && _MemoryMappedRegionAddress != IntPtr.Zero)
