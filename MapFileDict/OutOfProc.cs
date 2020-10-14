@@ -20,96 +20,26 @@ namespace MapFileDict
     {
         ServerQuit, // len =1 byte: 0 args
         Acknowledge, // acknowledge receipt of verb
-        verbGetLog,
-        verbString, // 
-        verbStringSharedMem,
-        verbSpeedTest,
+        GetLog,
+        GetString, // 
+        GetStringSharedMem,
+        GetSpeedTest,
         verbRequestData, // len = 1 byte: 0 args
-        verbSendObjAndReferences, // a single obj and a list of it's references
-        verbSendObjAndReferencesChunks, // yields perf gains: from 5k objs/sec to 1M/sec
-        verbCreateInvertedDictionary,
-        verbQueryParentOfObject,
-
+        SendObjAndReferences, // a single obj and a list of it's references
+        SendObjAndReferencesInChunks, // yields perf gains: from 5k objs/sec to 1M/sec
+        CreateInvertedDictionary,
+        QueryParentOfObject,
     }
 
-    [Serializable]
-    class ObjAndRefs// : ISerializable
-    {
-        public uint obj;
-        public List<uint> lstRefs; // since many objs don't ref things (like strings),then we'll allow NULL here
-        public ObjAndRefs()
-        {
-
-        }
-        // our own customs serialization is far faster
-        // 1st send the objaddr
-        // 2nd send the # of refs
-        // 3+ send each ref
-        public void SerializeToPipe(PipeStream pipe)
-        {
-            pipe.WriteUInt32(obj);
-            var cnt = lstRefs == null ? 0 : lstRefs.Count;
-            pipe.WriteUInt32((uint)cnt);
-            for (int i = 0; i < cnt; i++)
-            {
-                pipe.WriteUInt32(lstRefs[i]);
-            }
-        }
-        public static ObjAndRefs CreateFromPipe(PipeStream pipe)
-        {
-            var o = new ObjAndRefs();
-            o.obj = pipe.ReadUInt32();
-            if (o.obj != 0)
-            {
-                var cnt = pipe.ReadUInt32();
-                if (cnt > 0)
-                {
-                    o.lstRefs = new List<uint>();
-                    for (int i = 0; i < cnt; i++)
-                    {
-                        o.lstRefs.Add(pipe.ReadUInt32());
-                    }
-                }
-            }
-            return o;
-        }
-
-        //protected ObjAndRefs(SerializationInfo info, StreamingContext context)
-        //{
-        //    obj = info.GetUInt64("obj");
-        //    var cnt = info.GetInt32("cntRefs");
-        //    for (int i = 0; i < cnt; i++)
-        //    {
-        //        lstRefs.Add(info.GetUInt64($"i{i}"));
-        //    }
-        //}
-        //public void GetObjectData(SerializationInfo info, StreamingContext context)
-        //{
-        //    info.AddValue("obj", obj);
-        //    info.AddValue("cntRefs", lstRefs.Count);
-        //    for (int i = 0; i < lstRefs.Count; i++)
-        //    {
-        //        info.AddValue($"i{i}", lstRefs[i]);
-        //    }
-        //}
-
-        public override string ToString()
-        {
-            var refs = lstRefs == null ? string.Empty : string.Join(",", lstRefs.ToArray());
-            return $"{obj:x8}  {refs}";
-        }
-    }
     public class OutOfProc : IDisposable
     {
-        public int SpeedBufSize = 10; // for testing transmission speeds
-        public byte[] speedBuf; // used for testing speed comm only
         private CancellationToken token;
         public string pipeName;
-        public IntPtr mappedSection;
         public uint sharedMapSize;
         public string sharedFileMapName;
-        MemoryMappedFile mmf;
-        MemoryMappedViewAccessor mmfView;
+        MemoryMappedFile _MemoryMappedFileForSharedRegion;
+        MemoryMappedViewAccessor _MemoryMappedFileViewForSharedRegion;
+        public IntPtr _MemoryMappedRegionAddress;
         private int pidClient;
         private MyTraceListener mylistener;
 
@@ -117,17 +47,15 @@ namespace MapFileDict
         {
 
         }
-        public OutOfProc(int PidClient, CancellationToken token, int speedBufSize = 10)
+        public OutOfProc(int PidClient, CancellationToken token)
         {
-            this.Initialize(PidClient, token, speedBufSize);
+            this.Initialize(PidClient, token);
         }
 
-        private void Initialize(int pidClient, CancellationToken token, int ChunkSize)
+        private void Initialize(int pidClient, CancellationToken token)
         {
             this.token = token;
             this.pidClient = pidClient;
-            this.SpeedBufSize = ChunkSize;
-            speedBuf = new byte[ChunkSize];
             if (pidClient != Process.GetCurrentProcess().Id)
             {
                 mylistener = new MyTraceListener();
@@ -135,22 +63,23 @@ namespace MapFileDict
                 Trace.WriteLine($"Server Trace Listener created");
             }
             pipeName = $"MapFileDictPipe_{pidClient}";
+
             sharedFileMapName = $"MapFileDictSharedMem_{pidClient}\0";
             sharedMapSize = 65536U;
-            mmf = MemoryMappedFile.CreateOrOpen(
+            _MemoryMappedFileForSharedRegion = MemoryMappedFile.CreateOrOpen(
                mapName: sharedFileMapName,
                capacity: sharedMapSize,
                access: MemoryMappedFileAccess.ReadWrite,
                options: MemoryMappedFileOptions.None,
                inheritability: HandleInheritability.None
                );
-            mmfView = mmf.CreateViewAccessor(
+            _MemoryMappedFileViewForSharedRegion = _MemoryMappedFileForSharedRegion.CreateViewAccessor(
                offset: 0,
                size: 0,
                access: MemoryMappedFileAccess.ReadWrite);
-            mappedSection = mmfView.SafeMemoryMappedViewHandle.DangerousGetHandle();
-            Trace.WriteLine($"{Process.GetCurrentProcess().ProcessName} IntPtr.Size = {IntPtr.Size} Shared Memory region address {mappedSection.ToInt64():x16}");
-            speedBuf = new byte[SpeedBufSize];
+            _MemoryMappedRegionAddress = _MemoryMappedFileViewForSharedRegion.SafeMemoryMappedViewHandle.DangerousGetHandle();
+            Trace.WriteLine($"{Process.GetCurrentProcess().ProcessName} IntPtr.Size = {IntPtr.Size} Shared Memory region address {_MemoryMappedRegionAddress.ToInt64():x16}");
+
         }
 
         public static Process CreateServer(int pidClient)
@@ -241,36 +170,21 @@ namespace MapFileDict
                                         Trace.WriteLine($"Server got quit message");
                                         receivedQuit = true;
                                         break;
-                                    case Verbs.verbSendObjAndReferences:
-                                        //var b = new BinaryFormatter();
-                                        //unsafe
-                                        //{
-                                        //    var mbPtr = (byte*)mappedSection.ToPointer();
-                                        //    using (var ms = new UnmanagedMemoryStream(mbPtr, sharedMapSize, sharedMapSize, FileAccess.ReadWrite))
-                                        //    {
-                                        //        var objAndRef = b.Deserialize(ms) as ObjAndRefs;
-                                        //        dictObjRef[objAndRef.obj] = objAndRef;
-                                        //        //                                            Trace.WriteLine($"Server got {nameof(Verbs.verbSendObjAndReferences)}  {objAndRef}");
-                                        //    }
-
-                                        //}
+                                    case Verbs.SendObjAndReferences:
                                         {
                                             var lst = new List<uint>();
                                             var obj = pipeServer.ReadUInt32();
                                             var cnt = pipeServer.ReadUInt32();
-                                            if (cnt > 0)
+                                            for (int i = 0; i < cnt; i++)
                                             {
-                                                for (int i = 0; i < cnt; i++)
-                                                {
-                                                    lst.Add(pipeServer.ReadUInt32());
-                                                }
+                                                lst.Add(pipeServer.ReadUInt32());
                                             }
                                             dictObjRef[obj] = lst;
-                                            Trace.WriteLine($"Server got {nameof(Verbs.verbSendObjAndReferences)}  {obj:x8} # child = {cnt:n8}");
+                                            Trace.WriteLine($"Server got {nameof(Verbs.SendObjAndReferences)}  {obj:x8} # child = {cnt:n8}");
                                         }
                                         await pipeServer.SendAckAsync();
                                         break;
-                                    case Verbs.verbSendObjAndReferencesChunks:
+                                    case Verbs.SendObjAndReferencesInChunks:
                                         {
                                             var bufSize = (int)pipeServer.ReadUInt32();
                                             var buf = new byte[bufSize];
@@ -300,11 +214,11 @@ namespace MapFileDict
                                             await pipeServer.SendAckAsync();
                                         }
                                         break;
-                                    case Verbs.verbCreateInvertedDictionary:
+                                    case Verbs.CreateInvertedDictionary:
                                         dictInverted = InvertDictionary(dictObjRef);
                                         await pipeServer.SendAckAsync();
                                         break;
-                                    case Verbs.verbQueryParentOfObject:
+                                    case Verbs.QueryParentOfObject:
                                         var objQuery = pipeServer.ReadUInt32();
                                         if (dictInverted.TryGetValue(objQuery, out var lstParents))
                                         {
@@ -320,7 +234,7 @@ namespace MapFileDict
                                         }
                                         pipeServer.WriteUInt32(0); // terminator
                                         break;
-                                    case Verbs.verbGetLog:
+                                    case Verbs.GetLog:
                                         if (mylistener != null)
                                         {
                                             Trace.WriteLine($"# dict entries = {dictObjRef.Count}");
@@ -328,21 +242,21 @@ namespace MapFileDict
                                             var strlog = string.Join("\r\n   ", mylistener.lstLoggedStrings);
                                             mylistener.lstLoggedStrings.Clear();
                                             var buf = Encoding.ASCII.GetBytes("     ServerLog::" + strlog);
-                                            Marshal.Copy(buf, 0, mappedSection, buf.Length);
+                                            Marshal.Copy(buf, 0, _MemoryMappedRegionAddress, buf.Length);
                                         }
                                         else
                                         {
                                             var buf = Encoding.ASCII.GetBytes("No Logs because in proc");
-                                            Marshal.Copy(buf, 0, mappedSection, buf.Length);
+                                            Marshal.Copy(buf, 0, _MemoryMappedRegionAddress, buf.Length);
                                         }
                                         await pipeServer.SendAckAsync();
                                         break;
-                                    case Verbs.verbStringSharedMem:
-                                        var len = Marshal.ReadIntPtr(mappedSection);
-                                        var str = Marshal.PtrToStringAnsi(mappedSection + IntPtr.Size, len.ToInt32());
+                                    case Verbs.GetStringSharedMem:
+                                        var len = Marshal.ReadIntPtr(_MemoryMappedRegionAddress);
+                                        var str = Marshal.PtrToStringAnsi(_MemoryMappedRegionAddress + IntPtr.Size, len.ToInt32());
                                         Trace.WriteLine($"Server: SharedMemStr {str}");
                                         break;
-                                    case Verbs.verbString:
+                                    case Verbs.GetString:
                                         var lstBytes = new List<byte>();
                                         while (!pipeServer.IsMessageComplete)
                                         {
@@ -358,10 +272,13 @@ namespace MapFileDict
                                         Trace.WriteLine($"Server: req data {strToSend}");
                                         await pipeServer.WriteAsync(strB, 0, strB.Length);
                                         break;
-                                    case Verbs.verbSpeedTest:
+                                    case Verbs.GetSpeedTest:
                                         {
-                                            await pipeServer.ReadAsync(speedBuf, 0, SpeedBufSize - 1);
-                                            Trace.WriteLine($"Server: got bytes {SpeedBufSize:n0}");
+                                            var bufSize = pipeServer.ReadUInt32();
+                                            var buf = new byte[bufSize];
+                                            await pipeServer.ReadAsync(buf, 0, (int)bufSize);
+                                            Trace.WriteLine($"Server: got bytes {bufSize:n0}");
+                                            await pipeServer.SendAckAsync();
                                         }
                                         break;
                                     default:
@@ -445,17 +362,17 @@ namespace MapFileDict
 
         public void Dispose()
         {
-            mmfView.Dispose();
-            mmf.Dispose();
+            _MemoryMappedFileViewForSharedRegion?.Dispose();
+            _MemoryMappedFileForSharedRegion?.Dispose();
             mylistener?.Dispose();
         }
 
         internal async Task<string> GetLogFromServer(NamedPipeClientStream pipeClient)
         {
             Trace.WriteLine($"getting log from server");
-            pipeClient.WriteByte((byte)Verbs.verbGetLog);
+            pipeClient.WriteByte((byte)Verbs.GetLog);
             await pipeClient.GetAckAsync();
-            var logstrs = Marshal.PtrToStringAnsi(mappedSection);
+            var logstrs = Marshal.PtrToStringAnsi(_MemoryMappedRegionAddress);
             return logstrs;
         }
         static MyExecutionContext CreateExecutionContext(TaskCompletionSource<int> tcsStaThread)

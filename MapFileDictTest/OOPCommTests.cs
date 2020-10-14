@@ -176,7 +176,7 @@ Parents of WpfTextView   362b72e0
                     var numChunksSent = await SendObjGraphInChunksAsync(pipeClient, dictOGraph);
                     Trace.WriteLine($"Sent {numObjs}  #Chunks = {numChunksSent} Objs/Sec = {numObjs / sw.Elapsed.TotalSeconds:n2}"); // 5k/sec
 
-                    pipeClient.WriteByte((byte)Verbs.verbCreateInvertedDictionary);
+                    pipeClient.WriteByte((byte)Verbs.CreateInvertedDictionary);
                     await pipeClient.GetAckAsync();
                     Trace.WriteLine($"Inverted Dictionary");
 
@@ -215,7 +215,7 @@ Parents of WpfTextView   362b72e0
                     // 0460eea0 Microsoft.CodeAnalysis.VisualBasic.Syntax.InternalSyntax.SyntaxNodeCache+Entry[]
                     // 049b90e0 Microsoft.CodeAnalysis.SyntaxNode[]
                     Trace.WriteLine($"The cur obj {kvp.Key:x8} size={numBytesForThisObj} is too big for chunk {bufChunkSize}: sending via non-chunk");
-                    pipeClient.WriteByte((byte)Verbs.verbSendObjAndReferences);
+                    pipeClient.WriteByte((byte)Verbs.SendObjAndReferences);
                     pipeClient.WriteUInt32(kvp.Key);
                     pipeClient.WriteUInt32((uint)numChildren);
 
@@ -287,7 +287,7 @@ Parents of WpfTextView   362b72e0
                 bufChunk[ndxbufChunk++] = 0;
                 bufChunk[ndxbufChunk++] = 0;
                 bufChunk[ndxbufChunk++] = 0;
-                pipeClient.WriteByte((byte)Verbs.verbSendObjAndReferencesChunks);
+                pipeClient.WriteByte((byte)Verbs.SendObjAndReferencesInChunks);
                 pipeClient.WriteUInt32((uint)ndxbufChunk); // size of buf
                 pipeClient.Write(bufChunk, 0, ndxbufChunk);
                 await pipeClient.GetAckAsync();
@@ -300,9 +300,9 @@ Parents of WpfTextView   362b72e0
         {
             var cts = new CancellationTokenSource();
             var dictOGraph = await ReadObjectGraphAsync(fnameObjectGraph);
-            using (var oop = new OutOfProc(Process.GetCurrentProcess().Id, cts.Token, speedBufSize: 1024 * 1024 * 1024))
+            using (var oop = new OutOfProc(Process.GetCurrentProcess().Id, cts.Token))
             {
-                Trace.WriteLine($"Mapped Section {oop.mappedSection} 0x{oop.mappedSection.ToInt32():x8}");
+                Trace.WriteLine($"Mapped Section {oop._MemoryMappedRegionAddress} 0x{oop._MemoryMappedRegionAddress.ToInt32():x8}");
 
                 var taskServer = oop.DoServerLoopAsync();
 
@@ -314,7 +314,7 @@ Parents of WpfTextView   362b72e0
                     var numChunksSent = await SendObjGraphInChunksAsync(pipeClient, dictOGraph);
                     Trace.WriteLine($"Sent {numObjs}  #Chunks = {numChunksSent} Objs/Sec = {numObjs / sw.Elapsed.TotalSeconds:n2}"); // 5k/sec
 
-                    pipeClient.WriteByte((byte)Verbs.verbCreateInvertedDictionary);
+                    pipeClient.WriteByte((byte)Verbs.CreateInvertedDictionary);
                     await pipeClient.GetAckAsync();
                     Trace.WriteLine($"Inverted Dictionary");
                     DoShowResultsFromQueryForParents(pipeClient, SystemStackOverflowException);
@@ -353,7 +353,7 @@ Parents of WpfTextView   362b72e0
         private List<uint> QueryServerForParent(NamedPipeClientStream pipeClient, uint objId)
         {
             Trace.WriteLine($"Query Parent {objId:x8}");
-            pipeClient.WriteByte((byte)Verbs.verbQueryParentOfObject);
+            pipeClient.WriteByte((byte)Verbs.QueryParentOfObject);
             pipeClient.WriteUInt32(objId);
             var lstParents = new List<uint>();
             while (true)
@@ -437,10 +437,10 @@ IntPtr.Size = 8 Shared Memory region address
                 }
 
                 Trace.WriteLine($"Client: GetLog");
-                verb[0] = (byte)Verbs.verbGetLog;
+                verb[0] = (byte)Verbs.GetLog;
                 await pipeClient.WriteAsync(verb, 0, 1);
                 await pipeClient.GetAckAsync();
-                var logstrs = Marshal.PtrToStringAnsi(oop.mappedSection);
+                var logstrs = Marshal.PtrToStringAnsi(oop._MemoryMappedRegionAddress);
                 Trace.WriteLine($"Got log from server\r\n" + logstrs);
 
             });
@@ -488,9 +488,9 @@ IntPtr.Size = 8 Shared Memory region address
         public async Task OOPTestInProc()
         {
             var cts = new CancellationTokenSource();
-            using (var oop = new OutOfProc(Process.GetCurrentProcess().Id, cts.Token, speedBufSize: 1024 * 1024 * 1024))
+            using (var oop = new OutOfProc(Process.GetCurrentProcess().Id, cts.Token))
             {
-                Trace.WriteLine($"Mapped Section {oop.mappedSection} 0x{oop.mappedSection.ToInt32():x8}");
+                Trace.WriteLine($"Mapped Section {oop._MemoryMappedRegionAddress} 0x{oop._MemoryMappedRegionAddress.ToInt32():x8}");
 
                 var taskServer = oop.DoServerLoopAsync();
 
@@ -548,7 +548,7 @@ sent message..requesting data
                 {
                     var strBuf = Encoding.ASCII.GetBytes($"MessageString {i}");
                     var buf = new byte[strBuf.Length + 1];
-                    buf[0] = (byte)Verbs.verbString;
+                    buf[0] = (byte)Verbs.GetString;
                     Array.Copy(strBuf, 0, buf, 1, strBuf.Length);
                     Trace.WriteLine("Client: sending message");
                     await pipeClient.WriteAsync(buf, 0, buf.Length);
@@ -556,9 +556,9 @@ sent message..requesting data
                 }
                 {
                     var strBuf = Encoding.ASCII.GetBytes($"StrSharedMem {i}");
-                    verb[0] = (byte)Verbs.verbStringSharedMem;
-                    Marshal.WriteInt32(oop.mappedSection, strBuf.Length);
-                    Marshal.Copy(strBuf, 0, oop.mappedSection + IntPtr.Size, strBuf.Length);
+                    verb[0] = (byte)Verbs.GetStringSharedMem;
+                    Marshal.WriteInt32(oop._MemoryMappedRegionAddress, strBuf.Length);
+                    Marshal.Copy(strBuf, 0, oop._MemoryMappedRegionAddress + IntPtr.Size, strBuf.Length);
                     await pipeClient.WriteAsync(verb, 0, 1);
                 }
                 {
@@ -572,16 +572,19 @@ sent message..requesting data
             }
             {
                 // speedtest
-                var nIter = 10;
-                var bufSpeed = new byte[oop.SpeedBufSize];
-                bufSpeed[0] = (byte)Verbs.verbSpeedTest;
+                var nIter = 10U;
+                var bufSize = 1024 * 1024 * 1024;
+                var bufSpeed = new byte[bufSize];
                 var sw = Stopwatch.StartNew();
                 for (int iter = 0; iter < nIter; iter++)
                 {
-                    Trace.WriteLine($"Sending chunk {iter}");
+                    Trace.WriteLine($"Sending buf {bufSize:n0} Iter={iter}");
+                    pipeClient.WriteByte((byte)Verbs.GetSpeedTest);
+                    pipeClient.WriteUInt32((uint)bufSize);
                     await pipeClient.WriteAsync(bufSpeed, 0, bufSpeed.Length);
+                    await pipeClient.GetAckAsync();
                 }
-                var bps = (double)oop.SpeedBufSize * nIter / sw.Elapsed.TotalSeconds;
+                var bps = (double)bufSize * nIter / sw.Elapsed.TotalSeconds;
                 Trace.WriteLine($"BytesPerSec = {bps:n0}"); // 1.4 G/Sec
             }
             //                if (oop.option == OOPOption.InProcTestLogging)
