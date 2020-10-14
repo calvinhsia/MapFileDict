@@ -26,6 +26,10 @@ namespace MapFileDict
         verbSpeedTest,
         verbRequestData, // len = 1 byte: 0 args
         verbSendObjAndReferences, // a single obj and a list of it's references
+        verbSendObjAndReferencesChunks, // yields perf gains: from 5k objs/sec to 1M/sec
+        verbCreateInvertedDictionary,
+        verbQueryParentOfObject,
+
     }
 
     [Serializable]
@@ -72,11 +76,10 @@ namespace MapFileDict
         public static Dictionary<uint, List<uint>> GetDictObjsFromPipe(PipeStream pipe)
         {
             var dictObjRef = new Dictionary<uint, List<uint>>();
-            var lst = new List<uint>();
             while (true)
             {
+                var lst = new List<uint>();
                 var obj = pipe.ReadUInt32();
-                lst.Clear();
                 if (obj == 0)
                 {
                     break;
@@ -92,40 +95,6 @@ namespace MapFileDict
                 dictObjRef[obj] = lst;
             }
             return dictObjRef;
-        }
-        public static Dictionary<uint, List<uint>> InvertDictionary(Dictionary<uint, List<uint>> dictOGraph)
-        {
-            var dictInvert = new Dictionary<uint, List<uint>>(); // obj ->list of objs that reference it
-                                                                 // the result will be a dict of every object, with a value of a List of all the objects referring to it.
-                                                                 // thus looking for parents of a particular obj will be fast.
-
-            List<uint> AddObjToDict(uint obj)
-            {
-                if (!dictInvert.TryGetValue(obj, out var lstParents))
-                {
-                    dictInvert[obj] = null; // initially, this obj has no parents: we haven't seen it before
-                }
-                return lstParents;
-            }
-            foreach (var kvp in dictOGraph)
-            {
-                var lsto = AddObjToDict(kvp.Key);
-                if (kvp.Value != null)
-                {
-                    foreach (var oChild in kvp.Value)
-                    {
-                        var lstChildsParents = AddObjToDict(oChild);
-                        if (lstChildsParents == null)
-                        {
-                            lstChildsParents = new List<uint>();
-                            dictInvert[oChild] = lstChildsParents;
-                        }
-                        lstChildsParents.Add(kvp.Key);// set the parent of this child
-                    }
-                }
-            }
-
-            return dictInvert;
         }
 
         //protected ObjAndRefs(SerializationInfo info, StreamingContext context)
@@ -155,7 +124,7 @@ namespace MapFileDict
     }
     public class OutOfProc : IDisposable
     {
-        public int chunkSize = 10;
+        public int SpeedBufSize = 10; // for testing transmission speeds
         public byte[] speedBuf; // used for testing speed comm only
         private CancellationToken token;
         public string pipeName;
@@ -171,16 +140,16 @@ namespace MapFileDict
         {
 
         }
-        public OutOfProc(int PidClient, CancellationToken token, int ChunkSize = 10)
+        public OutOfProc(int PidClient, CancellationToken token, int speedBufSize = 10)
         {
-            this.Initialize(PidClient, token, ChunkSize);
+            this.Initialize(PidClient, token, speedBufSize);
         }
 
         private void Initialize(int pidClient, CancellationToken token, int ChunkSize)
         {
             this.token = token;
             this.pidClient = pidClient;
-            this.chunkSize = ChunkSize;
+            this.SpeedBufSize = ChunkSize;
             speedBuf = new byte[ChunkSize];
             if (pidClient != Process.GetCurrentProcess().Id)
             {
@@ -204,7 +173,7 @@ namespace MapFileDict
                access: MemoryMappedFileAccess.ReadWrite);
             mappedSection = mmfView.SafeMemoryMappedViewHandle.DangerousGetHandle();
             Trace.WriteLine($"{Process.GetCurrentProcess().ProcessName} IntPtr.Size = {IntPtr.Size} Shared Memory region address {mappedSection.ToInt64():x16}");
-            speedBuf = new byte[chunkSize];
+            speedBuf = new byte[SpeedBufSize];
         }
 
         public static Process CreateServer(int pidClient)
@@ -275,6 +244,7 @@ namespace MapFileDict
                            () => { pipeServer.Disconnect(); Trace.WriteLine("Cancel: disconnect pipe"); }))
                     {
                         var dictObjRef = new Dictionary<uint, List<uint>>();
+                        Dictionary<uint, List<uint>> dictInverted = null;
 
                         while (!receivedQuit)
                         {
@@ -310,6 +280,52 @@ namespace MapFileDict
                                         dictObjRef = ObjAndRefs.GetDictObjsFromPipe(pipeServer);
                                         await pipeServer.SendAckAsync();
 
+                                        break;
+                                    case Verbs.verbSendObjAndReferencesChunks:
+                                        {
+                                            var bufSize = (int)pipeServer.ReadUInt32();
+                                            var buf = new byte[bufSize];
+                                            await pipeServer.ReadAsync(buf, 0, bufSize);
+                                            var bufNdx = 0;
+                                            while (true)
+                                            {
+                                                var lst = new List<uint>();
+                                                var obj = BitConverter.ToUInt32(buf, bufNdx);
+                                                bufNdx += 4; // sizeof IntPtr in the client process
+                                                if (obj == 0)
+                                                {
+                                                    break;
+                                                }
+                                                var cnt = BitConverter.ToUInt32(buf, bufNdx);
+                                                bufNdx += 4;
+                                                if (cnt > 0)
+                                                {
+                                                    for (int i = 0; i < cnt; i++)
+                                                    {
+                                                        lst.Add(BitConverter.ToUInt32(buf, bufNdx));
+                                                        bufNdx += 4;
+                                                    }
+                                                }
+                                                dictObjRef[obj] = lst;
+                                            }
+                                            await pipeServer.SendAckAsync();
+                                        }
+                                        break;
+                                    case Verbs.verbCreateInvertedDictionary:
+                                        dictInverted = InvertDictionary(dictObjRef);
+                                        await pipeServer.SendAckAsync();
+                                        break;
+                                    case Verbs.verbQueryParentOfObject:
+                                        var objQuery = pipeServer.ReadUInt32();
+                                        if (dictInverted.TryGetValue(objQuery, out var lstParents))
+                                        {
+                                            Trace.WriteLine($"Server: {objQuery:x8}  NumParents={lstParents.Count}");
+                                            foreach (var parent in lstParents)
+                                            {
+                                                pipeServer.WriteUInt32(parent);
+                                            }
+                                        }
+                                        pipeServer.WriteUInt32(0); // terminator
                                         break;
                                     case Verbs.verbGetLog:
                                         if (mylistener != null)
@@ -351,15 +367,15 @@ namespace MapFileDict
                                         break;
                                     case Verbs.verbSpeedTest:
                                         {
-                                            await pipeServer.ReadAsync(speedBuf, 0, chunkSize - 1);
-                                            Trace.WriteLine($"Server: got bytes {chunkSize:n0}");
+                                            await pipeServer.ReadAsync(speedBuf, 0, SpeedBufSize - 1);
+                                            Trace.WriteLine($"Server: got bytes {SpeedBufSize:n0}");
                                         }
                                         break;
                                 }
-
                             }
                             catch (Exception ex)
                             {
+                                Trace.WriteLine(ex.ToString());
                                 mylistener?.ForceAddToLog(ex.ToString());
                                 throw;
                             }
@@ -391,6 +407,40 @@ namespace MapFileDict
             {
                 Environment.Exit(0);
             }
+        }
+        public static Dictionary<uint, List<uint>> InvertDictionary(Dictionary<uint, List<uint>> dictOGraph)
+        {
+            var dictInvert = new Dictionary<uint, List<uint>>(); // obj ->list of objs that reference it
+                                                                 // the result will be a dict of every object, with a value of a List of all the objects referring to it.
+                                                                 // thus looking for parents of a particular obj will be fast.
+
+            List<uint> AddObjToDict(uint obj)
+            {
+                if (!dictInvert.TryGetValue(obj, out var lstParents))
+                {
+                    dictInvert[obj] = null; // initially, this obj has no parents: we haven't seen it before
+                }
+                return lstParents;
+            }
+            foreach (var kvp in dictOGraph)
+            {
+                var lsto = AddObjToDict(kvp.Key);
+                if (kvp.Value != null)
+                {
+                    foreach (var oChild in kvp.Value)
+                    {
+                        var lstChildsParents = AddObjToDict(oChild);
+                        if (lstChildsParents == null)
+                        {
+                            lstChildsParents = new List<uint>();
+                            dictInvert[oChild] = lstChildsParents;
+                        }
+                        lstChildsParents.Add(kvp.Key);// set the parent of this child
+                    }
+                }
+            }
+
+            return dictInvert;
         }
 
         public void Dispose()

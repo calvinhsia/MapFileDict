@@ -18,12 +18,15 @@ namespace MapFileDictTest
     public class OOPCommTests : MyTestBase
     {
         string fnameObjectGraph = @"c:\users\calvinh\Desktop\ObjGraph.txt"; // 2.1Megs from "VSDbgData\VSDbgTestDumps\MSSln22611\MSSln22611.dmp
+        uint WpfTextView = 0x362b72e0;
+        uint TextBuffer = 0x3629712c;
+
         [TestMethod]
         public async Task OOPGetObjectGraph()
         {
             var dictOGraph = await ReadObjectGraphAsync(fnameObjectGraph);
 
-            Dictionary<uint, List<uint>> dictInvert = ObjAndRefs.InvertDictionary(dictOGraph);
+            Dictionary<uint, List<uint>> dictInvert = OutOfProc.InvertDictionary(dictOGraph);
 
             Trace.WriteLine($"Inverted dict {dictInvert.Count:n0}"); // System.Object, String.Empty have the most parents: e.g. 0xaaaa
             //362b72e0  Microsoft.VisualStudio.Text.Editor.Implementation.WpfTextView   (
@@ -38,8 +41,8 @@ namespace MapFileDictTest
                     Trace.WriteLine($"   {itm:x8}");
                 }
             }
-            ShowParents(0x362b72e0, "WpfTextView");
-            ShowParents(0x3629712c, "TextBuffer");
+            ShowParents(WpfTextView, "WpfTextView");
+            ShowParents(TextBuffer, "TextBuffer");
             VerifyLogStrings(@"
 Parents of WpfTextView   362b72e0
 03b17f7c
@@ -52,7 +55,7 @@ Parents of WpfTextView   362b72e0
             // 3618b1e4 Microsoft.VisualStudio.Editor.Implementation.VsCodeWindowAdapter
         }
 
-        private async Task<Dictionary<uint,List<uint>>> ReadObjectGraphAsync(string fnameObjectGraph)
+        private async Task<Dictionary<uint, List<uint>>> ReadObjectGraphAsync(string fnameObjectGraph)
         {
             /*
                         {
@@ -152,10 +155,64 @@ Parents of WpfTextView   362b72e0
                     }
                 }
             }
-            Trace.WriteLine($"Read {dictOGraph.Count:n0} objs. #Objs with at least 1 child = {nObjsWithAtLeastOneKid:n0}   TotalChildObjs = {nChildObjs:n0}");
+            Trace.WriteLine($"{nameof(ReadObjectGraphAsync)} Read {dictOGraph.Count:n0} objs. #Objs with at least 1 child = {nObjsWithAtLeastOneKid:n0}   TotalChildObjs = {nChildObjs:n0}");
             // 12 secs to read in graph Read 1,223,023 objs. #Objs with at least 1 child = 914,729   TotalChildObjs = 2,901,660
             return dictOGraph;
         }
+        [TestMethod]
+        public async Task OOPSendBigObjRefs()
+        {
+            try
+            {
+                var dictOGraph = await ReadObjectGraphAsync(fnameObjectGraph);
+                var pidClient = Process.GetCurrentProcess().Id;
+                var procServer = OutOfProc.CreateServer(pidClient);
+                await DoServerStuff(procServer, pidClient, async (pipeClient, oop) =>
+                {
+                    int numObjs = dictOGraph.Count;
+                    Trace.WriteLine($"Client: sending {numObjs:n0} objs");
+                    var sw = Stopwatch.StartNew();
+                    pipeClient.WriteByte((byte)Verbs.verbSendObjAndReferences);
+                    foreach (var kvp in dictOGraph)
+                    {
+                        pipeClient.WriteUInt32(kvp.Key);
+                        var cntChildren = kvp.Value == null ? 0 : kvp.Value.Count;
+                        pipeClient.WriteUInt32((uint)cntChildren);
+                        if (kvp.Value != null)
+                        {
+                            foreach (var child in kvp.Value)
+                            {
+                                pipeClient.WriteUInt32(child);
+                            }
+                        }
+                    }
+                    //for (uint iObj = 0; iObj < numObjs; iObj++)
+                    //{
+                    //    var x = new ObjAndRefs()
+                    //    {
+                    //        obj = 1 + iObj
+                    //    };
+                    //    x.lstRefs = new List<uint>();
+                    //    x.lstRefs.Add(2 + iObj * 10);
+
+                    //    x.lstRefs.Add(3 + iObj * 10);
+                    //    x.SerializeToPipe(pipeClient);
+                    //}
+                    pipeClient.WriteUInt32(0); // signal end
+                    await pipeClient.GetAckAsync();
+                    Trace.WriteLine($"Sent {numObjs} Objs/Sec = {numObjs / sw.Elapsed.TotalSeconds:n2}"); // 5k/sec
+
+
+                    Trace.WriteLine($"Got log from server\r\n" + await oop.GetLogFromServer(pipeClient));
+                });
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine(ex.ToString());
+                throw;
+            }
+        }
+
 
 
         [TestMethod]
@@ -171,55 +228,9 @@ Parents of WpfTextView   362b72e0
                 var procServer = Process.Start("ConsoleAppTest.exe", $"{pidClient}");
                  //*/
                 await DoServerStuff(procServer, pidClient, async (pipeClient, oop) =>
-                 {
-                     // foreach obj, send obj and list of objs referenced by it
-                     // format: all longs:
-                     //   0 : the obj
-                     //   1 : # of references
-                     //   
-                     // obj of 0 indicates end of list
-                     int numObjs = 1000000;
-                     Trace.WriteLine($"Client: sending {numObjs} objs");
-                     var sw = Stopwatch.StartNew();
-                     pipeClient.WriteByte((byte)Verbs.verbSendObjAndReferences);
-                     for (uint iObj = 0; iObj < numObjs; iObj++)
-                     {
-                         var x = new ObjAndRefs()
-                         {
-                             obj = 1 + iObj
-                         };
-                         x.lstRefs = new List<uint>();
-                         x.lstRefs.Add(2 + iObj * 10);
-
-                         x.lstRefs.Add(3 + iObj * 10);
-                         x.SerializeToPipe(pipeClient);
-                     }
-                     pipeClient.WriteUInt32(0);
-                     await pipeClient.GetAckAsync();
-                     Trace.WriteLine($"Sent {numObjs} Objs/Sec = {numObjs / sw.Elapsed.TotalSeconds:n2}"); // 5k/sec
-                     Trace.WriteLine($"Got log from server\r\n" + await oop.GetLogFromServer(pipeClient));
-                 });
-            }
-            catch (Exception ex)
-            {
-                Trace.WriteLine(ex.ToString());
-                throw;
-            }
-        }
-        [TestMethod]
-        public async Task OOPSendObjRefsInProc()
-        {
-            var cts = new CancellationTokenSource();
-            using (var oop = new OutOfProc(Process.GetCurrentProcess().Id, cts.Token, ChunkSize: 1024 * 1024 * 1024))
-            {
-                Trace.WriteLine($"Mapped Section {oop.mappedSection} 0x{oop.mappedSection.ToInt32():x8}");
-
-                var taskServer = oop.DoServerLoopAsync();
-
-                var taskClient = DoTestClientAsync(oop, async (pipeClient) =>
                 {
                     int numObjs = 10000;
-                    Trace.WriteLine($"Client: sending {numObjs} objs");
+                    Trace.WriteLine($"Client: sending {numObjs:n0} objs");
                     var sw = Stopwatch.StartNew();
                     pipeClient.WriteByte((byte)Verbs.verbSendObjAndReferences);
                     for (uint iObj = 0; iObj < numObjs; iObj++)
@@ -236,20 +247,162 @@ Parents of WpfTextView   362b72e0
                     }
                     pipeClient.WriteUInt32(0);
                     await pipeClient.GetAckAsync();
-                    Trace.WriteLine($"Sent {numObjs} Objs/Sec = {numObjs / sw.Elapsed.TotalSeconds:n2}"); // 5k/sec
-                                                                                                          //                    Trace.WriteLine($"Got log from server\r\n" + await oop.GetLogFromServer(pipeClient));
+
+                    Trace.WriteLine($"Sent {numObjs}  Objs/Sec = {numObjs / sw.Elapsed.TotalSeconds:n2}"); // 5k/sec
+                    Trace.WriteLine($"Got log from server\r\n" + await oop.GetLogFromServer(pipeClient));
                 });
-                var tskDelay = Task.Delay(TimeSpan.FromSeconds(Debugger.IsAttached ? 3000 : 20));
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine(ex.ToString());
+                throw;
+            }
+        }
+
+        private async Task<int> SendObjGraphInChunksAsync(NamedPipeClientStream pipeClient, Dictionary<uint, List<uint>> dictOGraph)
+        {
+            var bufChunkSize = 300000;
+            var bufChunk = new byte[bufChunkSize + 4]; // leave extra room for null term
+            int ndxbufChunk = 0;
+            var numChunksSent = 0;
+            var numObjs = dictOGraph.Count;
+            foreach (var kvp in dictOGraph)
+            {
+                var numChildren = kvp.Value?.Count ?? 0;
+                var numBytesForThisObj = (1 + 1 + numChildren) * IntPtr.Size; // obj + childCount + children
+                if (numBytesForThisObj >= bufChunkSize)
+                {
+                    await SendBufferAsync(); // empty it
+                    ndxbufChunk = 0;
+                    bufChunkSize = numBytesForThisObj;
+                    bufChunk = new byte[numBytesForThisObj + 4];
+
+                    Trace.WriteLine($"The cur obj {numBytesForThisObj} is too big for chunk {bufChunkSize}");
+                }
+                if (ndxbufChunk + numBytesForThisObj >= bufChunk.Length) // too big for cur buf?
+                {
+                    await SendBufferAsync(); // empty it
+                    ndxbufChunk = 0;
+                }
+
+                var b1 = BitConverter.GetBytes(kvp.Key);
+                Array.Copy(b1, 0, bufChunk, ndxbufChunk, b1.Length);
+                ndxbufChunk += b1.Length;
+
+                b1 = BitConverter.GetBytes(numChildren);
+                Array.Copy(b1, 0, bufChunk, ndxbufChunk, b1.Length);
+                ndxbufChunk += b1.Length;
+                for (int iChild = 0; iChild < numChildren; iChild++)
+                {
+                    b1 = BitConverter.GetBytes(kvp.Value[iChild]);
+                    Array.Copy(b1, 0, bufChunk, ndxbufChunk, b1.Length);
+                    ndxbufChunk += b1.Length;
+                }
+            }
+            //for (uint iObj = 0; iObj < numObjs; iObj++)
+            //{
+            //    int numChildren = 2;
+            //    var numBytesForThisObj = (1 + 1 + numChildren) * IntPtr.Size; // obj + childCount + children
+            //    if (numBytesForThisObj >= bufChunkSize)
+            //    {
+            //        throw new Exception("The cur obj is too big for chunk");
+            //    }
+            //    if (ndxbufChunk + numBytesForThisObj >= bufChunk.Length) // too big for cur buf?
+            //    {
+            //        await SendBufferAsync(); // empty it
+            //        ndxbufChunk = 0;
+            //    }
+            //    var b1 = BitConverter.GetBytes(1 + iObj);
+            //    Array.Copy(b1, 0, bufChunk, ndxbufChunk, b1.Length);
+            //    ndxbufChunk += b1.Length;
+
+            //    b1 = BitConverter.GetBytes(2); // # of children
+            //    Array.Copy(b1, 0, bufChunk, ndxbufChunk, b1.Length);
+            //    ndxbufChunk += b1.Length;
+
+            //    b1 = BitConverter.GetBytes(2 + iObj * 10);
+            //    Array.Copy(b1, 0, bufChunk, ndxbufChunk, b1.Length);
+            //    ndxbufChunk += b1.Length;
+
+            //    b1 = BitConverter.GetBytes(3 + iObj * 10);
+            //    Array.Copy(b1, 0, bufChunk, ndxbufChunk, b1.Length);
+            //    ndxbufChunk += b1.Length;
+            //}
+            if (ndxbufChunk > 0) // leftovers
+            {
+                Trace.WriteLine($"Client: send leftovers {ndxbufChunk}");
+                await SendBufferAsync();
+            }
+            return numChunksSent;
+            async Task SendBufferAsync()
+            {
+                bufChunk[ndxbufChunk++] = 0; // null terminating int32
+                bufChunk[ndxbufChunk++] = 0;
+                bufChunk[ndxbufChunk++] = 0;
+                bufChunk[ndxbufChunk++] = 0;
+                pipeClient.WriteByte((byte)Verbs.verbSendObjAndReferencesChunks);
+                pipeClient.WriteUInt32((uint)ndxbufChunk); // size of buf
+                pipeClient.Write(bufChunk, 0, ndxbufChunk);
+                await pipeClient.GetAckAsync();
+                numChunksSent++;
+            }
+        }
+
+        [TestMethod]
+        public async Task OOPSendObjRefsInProc()
+        {
+            var cts = new CancellationTokenSource();
+            var dictOGraph = await ReadObjectGraphAsync(fnameObjectGraph);
+            using (var oop = new OutOfProc(Process.GetCurrentProcess().Id, cts.Token, speedBufSize: 1024 * 1024 * 1024))
+            {
+                Trace.WriteLine($"Mapped Section {oop.mappedSection} 0x{oop.mappedSection.ToInt32():x8}");
+
+                var taskServer = oop.DoServerLoopAsync();
+
+                var taskClient = DoTestClientAsync(oop, async (pipeClient) =>
+                {
+                    int numObjs = dictOGraph.Count;
+                    Trace.WriteLine($"Client: sending {numObjs:n0} objs");
+                    var sw = Stopwatch.StartNew();
+                    var numChunksSent = await SendObjGraphInChunksAsync(pipeClient, dictOGraph);
+                    Trace.WriteLine($"Sent {numObjs}  #Chunks = {numChunksSent} Objs/Sec = {numObjs / sw.Elapsed.TotalSeconds:n2}"); // 5k/sec
+
+                    pipeClient.WriteByte((byte)Verbs.verbCreateInvertedDictionary);
+                    await pipeClient.GetAckAsync();
+                    Trace.WriteLine($"Inverted Dictionary");
+
+                    Trace.WriteLine($"Query Parent");
+                    pipeClient.WriteByte((byte)Verbs.verbQueryParentOfObject);
+                    pipeClient.WriteUInt32(WpfTextView);
+                    while (true)
+                    {
+                        var parent = pipeClient.ReadUInt32();
+                        if (parent == 0)
+                        {
+                            break;
+                        }
+                        Trace.WriteLine($"A Parent of {WpfTextView:x8} is {parent:x8}");
+                    }
+
+
+
+                    //                    Trace.WriteLine($"Got log from server\r\n" + await oop.GetLogFromServer(pipeClient));
+                });
+                var delaySecs = Debugger.IsAttached ? 3000 : 60;
+                var tskDelay = Task.Delay(TimeSpan.FromSeconds(delaySecs));
                 await Task.WhenAny(new[] { tskDelay, taskClient });
                 if (tskDelay.IsCompleted)
                 {
-                    Trace.WriteLine($"Delay completed: cancelling server");
+                    Trace.WriteLine($"Delay {delaySecs} completed: cancelling server");
                     cts.Cancel();
                 }
                 await taskServer;
                 Trace.WriteLine($"Done");
                 Assert.IsTrue(taskServer.IsCompleted);
             }
+            VerifyLogStrings(@"
+# dict entries = 1223023
+");
         }
 
         [TestMethod]
@@ -355,7 +508,7 @@ IntPtr.Size = 8 Shared Memory region address
             {
                 Trace.WriteLine($"Waiting for cons app to exit");
                 await Task.Delay(TimeSpan.FromMilliseconds(1000));
-                if (!Debugger.IsAttached && sw.Elapsed.TotalSeconds > 10)
+                if (!Debugger.IsAttached && sw.Elapsed.TotalSeconds > 60 * 5)
                 {
                     Trace.WriteLine($"Killing server process");
                     procServer.Kill();
@@ -372,7 +525,7 @@ IntPtr.Size = 8 Shared Memory region address
         public async Task OOPTestInProc()
         {
             var cts = new CancellationTokenSource();
-            using (var oop = new OutOfProc(Process.GetCurrentProcess().Id, cts.Token, ChunkSize: 1024 * 1024 * 1024))
+            using (var oop = new OutOfProc(Process.GetCurrentProcess().Id, cts.Token, speedBufSize: 1024 * 1024 * 1024))
             {
                 Trace.WriteLine($"Mapped Section {oop.mappedSection} 0x{oop.mappedSection.ToInt32():x8}");
 
@@ -457,7 +610,7 @@ sent message..requesting data
             {
                 // speedtest
                 var nIter = 10;
-                var bufSpeed = new byte[oop.chunkSize];
+                var bufSpeed = new byte[oop.SpeedBufSize];
                 bufSpeed[0] = (byte)Verbs.verbSpeedTest;
                 var sw = Stopwatch.StartNew();
                 for (int iter = 0; iter < nIter; iter++)
@@ -465,7 +618,7 @@ sent message..requesting data
                     Trace.WriteLine($"Sending chunk {iter}");
                     await pipeClient.WriteAsync(bufSpeed, 0, bufSpeed.Length);
                 }
-                var bps = (double)oop.chunkSize * nIter / sw.Elapsed.TotalSeconds;
+                var bps = (double)oop.SpeedBufSize * nIter / sw.Elapsed.TotalSeconds;
                 Trace.WriteLine($"BytesPerSec = {bps:n0}"); // 1.4 G/Sec
             }
             //                if (oop.option == OOPOption.InProcTestLogging)
