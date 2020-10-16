@@ -92,7 +92,7 @@ Parents of WpfTextView   362b72e0
 
 		private async Task<Dictionary<uint, List<uint>>> ReadObjectGraphAsync(string fnameObjectGraph)
 		{
-			/*
+			/*MSSln22611\MSSln22611.dmp
                         {
                             var sb = new StringBuilder();
                             foreach (var entry in _heap.EnumerateObjectAddresses())
@@ -261,7 +261,7 @@ WpfTextView 362b72e0  has 221 parents
 
 					DoShowResultsFromQueryForParents(pipeClient, WpfTextView, nameof(WpfTextView));
 				});
-				var delaySecs = Debugger.IsAttached ? 3000 : 60;
+				var delaySecs = Debugger.IsAttached ? 3000 : 40;
 				var tskDelay = Task.Delay(TimeSpan.FromSeconds(delaySecs));
 				await Task.WhenAny(new[] { tskDelay, taskClient });
 				if (tskDelay.IsCompleted)
