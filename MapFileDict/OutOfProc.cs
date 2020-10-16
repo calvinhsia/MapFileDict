@@ -76,6 +76,7 @@ namespace MapFileDict
         {
             // sometimes using Temp file in temp dir causes System.ComponentModel.Win32Exception: Operation did not complete successfully because the file contains a virus or potentially unwanted software
             var asm64BitFile = new FileInfo(Path.ChangeExtension("tempasm", ".exe")).FullName;
+            var createIt = true;
             try
             {
                 if (File.Exists(asm64BitFile))
@@ -86,15 +87,19 @@ namespace MapFileDict
             catch (Exception ex)
             {
                 Trace.WriteLine(ex.ToString());
+                createIt = false;
             }
             Trace.WriteLine($"Asm = {asm64BitFile}");
-            var creator = new AssemblyCreator().CreateAssembly(
-                asm64BitFile,
-                portableExecutableKinds: System.Reflection.PortableExecutableKinds.PE32Plus, // 64 bit
-                imageFileMachine: ImageFileMachine.AMD64,
-                AdditionalAssemblyPaths: string.Empty,
-                logOutput: true
-                );
+            if (createIt) // else reuse the EXE already created. 
+            {
+                var creator = new AssemblyCreator().CreateAssembly(
+                    asm64BitFile,
+                    portableExecutableKinds: System.Reflection.PortableExecutableKinds.PE32Plus, // 64 bit
+                    imageFileMachine: ImageFileMachine.AMD64,
+                    AdditionalAssemblyPaths: string.Empty,
+                    logOutput: true
+                    );
+            }
             var args = $@"""{Assembly.GetAssembly(typeof(OutOfProc)).Location
                                }"" {nameof(OutOfProc)} {
                                    nameof(OutOfProc.MyMainMethod)} {pidClient}";
