@@ -173,7 +173,7 @@ namespace MapFileDict
                                             var sizeRegion = pipeServer.ReadUInt32();
                                             CreateSharedSection(memRegionName: $"MapFileDictSharedMem_{pidClient}\0", regionSize: sizeRegion);
                                             Trace.WriteLine($"{Process.GetCurrentProcess().ProcessName} IntPtr.Size = {IntPtr.Size} Shared Memory region address {_MemoryMappedRegionAddress.ToInt64():x16}");
-                                            await pipeServer.SendStringAsAsciiAsync(_sharedFileMapName);
+                                            await pipeServer.WriteStringAsAsciiAsync(_sharedFileMapName);
                                         }
                                         break;
                                     case Verbs.SendObjAndReferences:
@@ -241,25 +241,23 @@ namespace MapFileDict
                                         pipeServer.WriteUInt32(0); // terminator
                                         break;
                                     case Verbs.GetLog:
-                                        if (mylistener != null)
                                         {
-                                            Trace.WriteLine($"# dict entries = {dictObjRef.Count}");
-                                            Trace.WriteLine($"Server: Getlog #entries = {mylistener.lstLoggedStrings.Count}");
-                                            var strlog = string.Join("\r\n   ", mylistener.lstLoggedStrings);
-                                            mylistener.lstLoggedStrings.Clear();
-                                            var buf = Encoding.ASCII.GetBytes("     ServerLog::" + strlog);
-                                            if ((int)_sharedMapSize >= buf.Length)
+                                            var strlog = string.Empty;
+                                            if (mylistener != null)
                                             {
-                                                Trace.WriteLine($"Log truncated"); //: get server log more often to reduce, or larger shared region size, or send as string or file or...
+                                                Trace.WriteLine($"# dict entries = {dictObjRef.Count}");
+                                                Trace.WriteLine($"Server: Getlog #entries = {mylistener.lstLoggedStrings.Count}");
+                                                strlog = string.Join("\r\n   ", mylistener.lstLoggedStrings);
+                                                mylistener.lstLoggedStrings.Clear();
                                             }
-                                            Marshal.Copy(buf, 0, _MemoryMappedRegionAddress, Math.Min((int)_sharedMapSize, buf.Length));
+                                            await pipeServer.WriteStringAsAsciiAsync(strlog);
+                                            //var buf = Encoding.ASCII.GetBytes("     ServerLog::" + strlog);
+                                            //if ((int)_sharedMapSize >= buf.Length)
+                                            //{
+                                            //    Trace.WriteLine($"Log truncated"); //: get server log more often to reduce, or larger shared region size, or send as string or file or...
+                                            //}
+                                            //Marshal.Copy(buf, 0, _MemoryMappedRegionAddress, Math.Min((int)_sharedMapSize, buf.Length));
                                         }
-                                        else
-                                        {
-                                            var buf = Encoding.ASCII.GetBytes("No Logs because in proc");
-                                            Marshal.Copy(buf, 0, _MemoryMappedRegionAddress, buf.Length);
-                                        }
-                                        await pipeServer.SendAckAsync();
                                         break;
                                     case Verbs.GetStringSharedMem:
                                         var len = Marshal.ReadIntPtr(_MemoryMappedRegionAddress);
@@ -378,7 +376,7 @@ namespace MapFileDict
                 var numBytesForThisObj = (1 + 1 + numChildren) * IntPtr.Size; // obj + childCount + children
                 if (numBytesForThisObj >= bufChunkSize)
                 {
-                    await SendBufferAsync().ConfigureAwait(true); // empty it
+                    await SendBufferAsync(); // empty it
                     ndxbufChunk = 0;
                     bufChunkSize = numBytesForThisObj;
                     bufChunk = new byte[numBytesForThisObj + 4];
@@ -394,11 +392,11 @@ namespace MapFileDict
                     {
                         pipeClient.WriteUInt32(tup.Item2[iChild]);
                     }
-                    await pipeClient.GetAckAsync().ConfigureAwait(true);
+                    await pipeClient.GetAckAsync();
                 }
                 if (ndxbufChunk + numBytesForThisObj >= bufChunk.Length) // too big for cur buf?
                 {
-                    await SendBufferAsync().ConfigureAwait(true); // empty it
+                    await SendBufferAsync(); // empty it
                     ndxbufChunk = 0;
                 }
                 {
@@ -420,7 +418,7 @@ namespace MapFileDict
             if (ndxbufChunk > 0) // leftovers
             {
                 Trace.WriteLine($"Client: send leftovers {ndxbufChunk}");
-                await SendBufferAsync().ConfigureAwait(true);
+                await SendBufferAsync();
             }
             return Tuple.Create<int, int>(numObjs, numChunksSent);
             async Task SendBufferAsync()
@@ -432,7 +430,7 @@ namespace MapFileDict
                 pipeClient.WriteByte((byte)Verbs.SendObjAndReferencesInChunks);
                 pipeClient.WriteUInt32((uint)ndxbufChunk); // size of buf
                 pipeClient.Write(bufChunk, 0, ndxbufChunk);
-                await pipeClient.GetAckAsync().ConfigureAwait(true);
+                await pipeClient.GetAckAsync();
                 numChunksSent++;
             }
         }
@@ -586,12 +584,12 @@ namespace MapFileDict
         {
             var verb = new byte[2];
             verb[0] = (byte)Verbs.Acknowledge;
-            await pipe.WriteAsync(verb, 0, 1).ConfigureAwait(true);
+            await pipe.WriteAsync(verb, 0, 1);
         }
         public static async Task GetAckAsync(this PipeStream pipe)
         {
             var buff = new byte[10];
-            var len = await pipe.ReadAsync(buff, 0, 1).ConfigureAwait(true);
+            var len = await pipe.ReadAsync(buff, 0, 1);
             if (len != 1 || buff[0] != (byte)Verbs.Acknowledge)
             {
                 Trace.Write($"Didn't get Expected Ack");
@@ -600,10 +598,10 @@ namespace MapFileDict
         /// <summary>
         /// Sends verb and waits for ack
         /// </summary>
-        public static async Task SendVerb(this PipeStream pipe, Verbs verb)
+        public static async Task WriteVerbAsync(this PipeStream pipe, Verbs verb)
         {
             pipe.WriteByte((byte)verb);
-            await pipe.GetAckAsync().ConfigureAwait(true);
+            await pipe.GetAckAsync();
         }
         public static void WriteUInt32(this PipeStream pipe, uint addr)
         {
@@ -629,17 +627,17 @@ namespace MapFileDict
             var res = BitConverter.ToUInt64(buf, 0);
             return res;
         }
-        public static async Task SendStringAsAsciiAsync(this PipeStream pipe, string str)
+        public static async Task WriteStringAsAsciiAsync(this PipeStream pipe, string str)
         {
             pipe.WriteUInt32((uint)str.Length);
             var byts = Encoding.ASCII.GetBytes(str);
-            await pipe.WriteAsync(byts, 0, byts.Length).ConfigureAwait(true);
+            await pipe.WriteAsync(byts, 0, byts.Length);
         }
         public static async Task<string> ReadStringAsAsciiAsync(this PipeStream pipe)
         {
             var strlen = pipe.ReadUInt32();
             var bytes = new byte[strlen];
-            await pipe.ReadAsync(bytes, 0, (int)strlen).ConfigureAwait(true);
+            await pipe.ReadAsync(bytes, 0, (int)strlen);
             var str = Encoding.ASCII.GetString(bytes);
             return str;
         }

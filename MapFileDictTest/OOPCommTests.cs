@@ -215,7 +215,9 @@ Parents of WpfTextView   362b72e0
 					await pipeClient.GetAckAsync();
 					Trace.WriteLine($"Inverted Dictionary");
 
-					DoShowResultsFromQueryForParents(pipeClient, SystemStackOverflowException, nameof(SystemStackOverflowException));
+                    await DoCreateSharedMemRegionAsync(pipeClient, oop, sharedRegionSize: 65536);
+
+                    DoShowResultsFromQueryForParents(pipeClient, SystemStackOverflowException, nameof(SystemStackOverflowException));
 					DoShowResultsFromQueryForParents(pipeClient, WpfTextView, nameof(WpfTextView));
 
 					Trace.WriteLine($"Got log from server\r\n" + await GetLogFromServer(pipeClient, oop));
@@ -280,7 +282,7 @@ WpfTextView 362b72e0  has 221 parents
 		}
 		private void DoShowResultsFromQueryForParents(NamedPipeClientStream pipeClient, uint objId, string desc)
 		{
-			var lstParents = QueryServerForParent(pipeClient, objId);
+			var lstParents = QueryServerForParents(pipeClient, objId);
 			Trace.WriteLine($"{desc} {WpfTextView:x8}  has {lstParents.Count} parents");
 
 			foreach (var parent in lstParents.Take(20))
@@ -289,7 +291,7 @@ WpfTextView 362b72e0  has 221 parents
 			}
 		}
 
-		private List<uint> QueryServerForParent(NamedPipeClientStream pipeClient, uint objId)
+		private List<uint> QueryServerForParents(NamedPipeClientStream pipeClient, uint objId)
 		{
 			Trace.WriteLine($"Query Parent {objId:x8}");
 			pipeClient.WriteByte((byte)Verbs.QueryParentOfObject);
@@ -375,13 +377,8 @@ IntPtr.Size = 8 Shared Memory region address
 					var readStr = Encoding.ASCII.GetString(bufReq, 0, buflen);
 					Trace.WriteLine($"Client req data from server: {readStr}");
 				}
+				Trace.WriteLine($"Got log from server\r\n" + await GetLogFromServer(pipeClient, oop));
 
-				Trace.WriteLine($"Client: GetLog");
-				verb[0] = (byte)Verbs.GetLog;
-				await pipeClient.WriteAsync(verb, 0, 1);
-				await pipeClient.GetAckAsync();
-				var logstrs = Marshal.PtrToStringAnsi(oop._MemoryMappedRegionAddress);
-				Trace.WriteLine($"Got log from server\r\n" + logstrs);
 
 			});
 		}
@@ -403,7 +400,7 @@ IntPtr.Size = 8 Shared Memory region address
 					await pipeClient.ConnectAsync(cts.Token);
 					Trace.WriteLine($"Client: connected");
 					await func(pipeClient, oop);
-					await pipeClient.SendVerb((byte)Verbs.ServerQuit);
+					await pipeClient.WriteVerbAsync((byte)Verbs.ServerQuit);
 				}
 			}
 			var didKill = false;
@@ -474,7 +471,7 @@ sent message..requesting data
 
 					await actionAsync(pipeClient);
 					Trace.WriteLine("Client: sending quit");
-					await pipeClient.SendVerb((byte)Verbs.ServerQuit);
+					await pipeClient.WriteVerbAsync((byte)Verbs.ServerQuit);
 				}
 				catch (Exception ex)
 				{
@@ -549,14 +546,16 @@ sent message..requesting data
 		internal async Task<string> GetLogFromServer(NamedPipeClientStream pipeClient, OutOfProc oop)
 		{
 			Trace.WriteLine($"getting log from server");
-			if (!oop.IsSharedRegionCreated())
-			{
-				await DoCreateSharedMemRegionAsync(pipeClient, oop, sharedRegionSize: 65536);
-			}
+            //if (!oop.IsSharedRegionCreated())
+            //{
+            //	await DoCreateSharedMemRegionAsync(pipeClient, oop, sharedRegionSize: 65536);
+            //}
 
-			pipeClient.WriteByte((byte)Verbs.GetLog);
-			await pipeClient.GetAckAsync();
-			var logstrs = Marshal.PtrToStringAnsi(oop._MemoryMappedRegionAddress);
+            //pipeClient.WriteByte((byte)Verbs.GetLog);
+            //await pipeClient.GetAckAsync();
+            //var logstrs = Marshal.PtrToStringAnsi(oop._MemoryMappedRegionAddress);
+            pipeClient.WriteByte((byte)Verbs.GetLog);
+            var logstrs = await pipeClient.ReadStringAsAsciiAsync();
 			return logstrs;
 		}
 	}
