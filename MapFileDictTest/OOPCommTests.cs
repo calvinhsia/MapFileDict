@@ -212,7 +212,7 @@ Parents of WpfTextView   362b72e0
                     Trace.WriteLine($"Sent {numObjs}  #Chunks = {numChunksSent} Objs/Sec = {numObjs / sw.Elapsed.TotalSeconds:n2}"); // 5k/sec
 
                     pipeClient.WriteByte((byte)MapFileDict.Verbs.CreateInvertedDictionary);
-                    await pipeClient.GetAckAsync();
+                    await pipeClient.ReadAcknowledgeAsync();
                     Trace.WriteLine($"Inverted Dictionary");
 
                     await oop.ClientCallServerWithVerb(Verbs.CreateSharedMemSection, 65536U);
@@ -249,26 +249,26 @@ WpfTextView 362b72e0  has 221 parents
                 {
                     try
                     {
-                        await oop._pipeClient.ConnectAsync(cts.Token);
+                        await oop.PipeFromClient.ConnectAsync(cts.Token);
 
                         await oop.ClientCallServerWithVerb(Verbs.CreateSharedMemSection, 65536U);
 
                         var sw = Stopwatch.StartNew();
                         var ienumOGraph = GetObjectGraphIEnumerable();
-                        var tup = await oop.SendObjGraphEnumerableInChunksAsync(oop._pipeClient, ienumOGraph);
+                        var tup = await oop.SendObjGraphEnumerableInChunksAsync(oop.PipeFromClient, ienumOGraph);
                         int numObjs = tup.Item1;
                         var numChunksSent = tup.Item2;
                         // the timing includes parsing the text file for obj graph
                         Trace.WriteLine($"Sent {numObjs}  #Chunks = {numChunksSent} Objs/Sec = {numObjs / sw.Elapsed.TotalSeconds:n2}"); // 5k/sec
 
-                        oop._pipeClient.WriteByte((byte)MapFileDict.Verbs.CreateInvertedDictionary);
-                        await oop._pipeClient.GetAckAsync();
+                        oop.PipeFromClient.WriteByte((byte)MapFileDict.Verbs.CreateInvertedDictionary);
+                        await oop.PipeFromClient.ReadAcknowledgeAsync();
                         Trace.WriteLine($"Inverted Dictionary");
                         await DoShowResultsFromQueryForParents(oop, SystemStackOverflowException, nameof(SystemStackOverflowException));
 
                         await DoShowResultsFromQueryForParents(oop, WpfTextView, nameof(WpfTextView));
                         Trace.WriteLine("Client: sending quit");
-                        await oop._pipeClient.WriteVerbAsync((byte)MapFileDict.Verbs.ServerQuit);
+                        await oop.PipeFromClient.WriteVerbAsync((byte)MapFileDict.Verbs.ServerQuit);
                     }
                     catch (Exception ex)
                     {
@@ -364,10 +364,10 @@ IntPtr.Size = 8 Shared Memory region address
             using (var oop = new OutOfProc(pidClient, cts.Token))
             {
                 Trace.WriteLine($"Client: starting to connect");
-                await oop._pipeClient.ConnectAsync(cts.Token);
+                await oop.PipeFromClient.ConnectAsync(cts.Token);
                 Trace.WriteLine($"Client: connected");
-                await func(oop._pipeClient, oop);
-                await oop._pipeClient.WriteVerbAsync((byte)MapFileDict.Verbs.ServerQuit);
+                await func(oop.PipeFromClient, oop);
+                await oop.PipeFromClient.WriteVerbAsync((byte)MapFileDict.Verbs.ServerQuit);
             }
             var didKill = false;
             while (!procServer.HasExited)
@@ -415,7 +415,7 @@ IntPtr.Size = 8 Shared Memory region address
                 {
                     try
                     {
-                        await oop._pipeClient.ConnectAsync(cts.Token);
+                        await oop.PipeFromClient.ConnectAsync(cts.Token);
 
                         var str = await oop.ClientCallServerWithVerb(Verbs.verbRequestData, null);
                         Trace.WriteLine($"Req data {str}");
@@ -437,6 +437,8 @@ IntPtr.Size = 8 Shared Memory region address
                         var bps = (double)bufSize * nIter / sw.Elapsed.TotalSeconds;
                         Trace.WriteLine($"BytesPerSec = {bps:n0}"); // 1.4 G/Sec
 
+                        var strbig = await oop.ClientCallServerWithVerb(Verbs.GetStringSharedMem, 0);
+                        Trace.Write("Got big string " + strbig);
 
                         Trace.WriteLine($"Server Logs: " + await oop.ClientCallServerWithVerb(Verbs.GetLog, null));
                         Trace.WriteLine("Client: sending quit");

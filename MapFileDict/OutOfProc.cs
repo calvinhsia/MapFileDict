@@ -2,6 +2,8 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO.Pipes;
+using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -14,7 +16,7 @@ namespace MapFileDict
         CreateSharedMemSection, // create a region of memory that can be shared between the client/server
         GetLog, // get server log entries: will clear all entries so far
         GetString, // very slow
-        GetStringSharedMem, // faster
+        GetStringSharedMem, // very fast
         DoSpeedTest,
         verbRequestData, // len = 1 byte: 0 args
         SendObjAndReferences, // a single obj and a list of it's references
@@ -38,31 +40,40 @@ namespace MapFileDict
         {
             AddVerbs();
         }
+        /// <summary>
+        /// The verbs are added to the Verbs enum and each has a two part implementation: one part that runs in the client code
+        /// and one that runs in the separate 64 bit server process 
+        /// This allows the client and the server code for each verb to be seen right next to each other
+        /// The pattern that's sent from the client must exactly match the pattern read on the server:
+        ///  e.g. if the client sends 2 bytes of SIZE and 4 bytes of OBJ, then the server must read the 2 then the 4
+        /// Sending a verb can require an Acknowledge, but it's not required.
+        /// WriteVerbAsync does wait for the Ack.
+        /// </summary>
         void AddVerbs()
         {
             AddVerb(Verbs.ServerQuit,
-                 async (oop, arg) =>
+                 async (arg) =>
                  {
-                     await oop._pipeClient.WriteVerbAsync(Verbs.ServerQuit);
+                     await PipeFromClient.WriteVerbAsync(Verbs.ServerQuit);
                      return null;
                  },
-                 async (oop, arg) =>
+                 async (arg) =>
                  {
                      Trace.WriteLine($"# dict entries = {dictObjRef.Count}");
-                     await oop._pipeServer.SendAckAsync();
+                     await PipeFromServer.WriteAcknowledgeAsync();
                      return Verbs.ServerQuit;
                  });
 
             AddVerb(Verbs.GetLog,
-                async (oop, arg) =>
+                async (arg) =>
                 {
-                    await oop._pipeClient.WriteVerbAsync(Verbs.GetLog);
-                    var logstrs = await oop._pipeClient.ReadStringAsAsciiAsync();
+                    await PipeFromClient.WriteVerbAsync(Verbs.GetLog);
+                    var logstrs = await PipeFromClient.ReadStringAsAsciiAsync();
                     return logstrs as string;
                 },
-                async (oop, arg) =>
+                async (arg) =>
                 {
-                    await oop._pipeServer.SendAckAsync();
+                    await PipeFromServer.WriteAcknowledgeAsync();
                     var strlog = string.Empty;
                     if (mylistener != null)
                     {
@@ -71,139 +82,158 @@ namespace MapFileDict
                         strlog = string.Join("\r\n   ", mylistener.lstLoggedStrings);
                         mylistener.lstLoggedStrings.Clear();
                     }
-                    await _pipeServer.WriteStringAsAsciiAsync(strlog);
+                    await PipeFromServer.WriteStringAsAsciiAsync(strlog);
 
                     return null;
                 });
 
             AddVerb(Verbs.CreateSharedMemSection,
-                async (oop, arg) =>
+                async (arg) =>
                 {
                     var sharedRegionSize = (uint)arg;
-                    await oop._pipeClient.WriteVerbAsync(Verbs.CreateSharedMemSection);
-                    _pipeClient.WriteUInt32(sharedRegionSize);
-                    var memRegionName = await _pipeClient.ReadStringAsAsciiAsync();
-                    oop.CreateSharedSection(memRegionName, sharedRegionSize); // now map that region into the client
+                    await PipeFromClient.WriteVerbAsync(Verbs.CreateSharedMemSection);
+                    PipeFromClient.WriteUInt32(sharedRegionSize);
+                    var memRegionName = await PipeFromClient.ReadStringAsAsciiAsync();
+                    CreateSharedSection(memRegionName, sharedRegionSize); // now map that region into the client
                     return null;
                 },
-                async (oop, arg) =>
+                async (arg) =>
                 {
-                    await oop._pipeServer.SendAckAsync();
-                    var sizeRegion = oop._pipeServer.ReadUInt32();
+                    await PipeFromServer.WriteAcknowledgeAsync();
+                    var sizeRegion = PipeFromServer.ReadUInt32();
                     CreateSharedSection(memRegionName: $"MapFileDictSharedMem_{pidClient}\0", regionSize: sizeRegion);
                     Trace.WriteLine($"{Process.GetCurrentProcess().ProcessName} IntPtr.Size = {IntPtr.Size} Shared Memory region address {_MemoryMappedRegionAddress.ToInt64():x16}");
-                    await oop._pipeServer.WriteStringAsAsciiAsync(_sharedFileMapName);
+                    await PipeFromServer.WriteStringAsAsciiAsync(_sharedFileMapName);
+                    return null;
+                });
+
+            AddVerb(Verbs.GetStringSharedMem,
+                async (arg) =>
+                {
+                    await PipeFromClient.WriteVerbAsync(Verbs.GetStringSharedMem);
+                    var lenstr = PipeFromClient.ReadUInt32();
+                    var str = Marshal.PtrToStringAnsi(_MemoryMappedRegionAddress, (int)lenstr);
+                    return str;
+                },
+                async (arg) =>
+                {
+                    await PipeFromServer.WriteAcknowledgeAsync();
+                    var strg = new string('a', 10000);
+                    var bytes = Encoding.ASCII.GetBytes(strg);
+                    Marshal.Copy(bytes, 0, _MemoryMappedRegionAddress, bytes.Length);
+                    PipeFromServer.WriteUInt32((uint)bytes.Length);
+
                     return null;
                 });
 
 
             AddVerb(Verbs.verbRequestData,
-                async (oop, arg) =>
+                async (arg) =>
                 {
-                    await oop._pipeClient.WriteVerbAsync(Verbs.verbRequestData);
-                    var res = await oop._pipeClient.ReadStringAsAsciiAsync();
+                    await PipeFromClient.WriteVerbAsync(Verbs.verbRequestData);
+                    var res = await PipeFromClient.ReadStringAsAsciiAsync();
                     return res;
                 },
-                async (oop, arg) =>
+                async (arg) =>
                 {
-                    await oop._pipeServer.SendAckAsync();
-                    await oop._pipeServer.WriteStringAsAsciiAsync(DateTime.Now.ToString() + $" IntPtr.Size= {IntPtr.Size} {Process.GetCurrentProcess().MainModule.FileName}");
+                    await PipeFromServer.WriteAcknowledgeAsync();
+                    await PipeFromServer.WriteStringAsAsciiAsync(DateTime.Now.ToString() + $" IntPtr.Size= {IntPtr.Size} {Process.GetCurrentProcess().MainModule.FileName}");
                     return null;
                 });
 
             AddVerb(Verbs.Delay,
-                async (oop, arg) =>
+                async (arg) =>
                 {
-                    await oop._pipeClient.WriteVerbAsync(Verbs.Delay);
+                    await PipeFromClient.WriteVerbAsync(Verbs.Delay);
                     byte delaysecs = (byte)arg;
                     Trace.WriteLine($"Client requesting delay of {delaysecs}");
-                    oop._pipeClient.WriteByte(delaysecs); // # secs
-                    await oop._pipeClient.GetAckAsync();
+                    PipeFromClient.WriteByte(delaysecs); // # secs
+                    await PipeFromClient.ReadAcknowledgeAsync();
                     return null;
                 },
-                async (oop, arg) =>
+                async (arg) =>
                 {
-                    await oop._pipeServer.SendAckAsync();
-                    var delaysecs = oop._pipeServer.ReadByte();
+                    await PipeFromServer.WriteAcknowledgeAsync();
+                    var delaysecs = PipeFromServer.ReadByte();
                     Trace.WriteLine($"Server got request to delay {delaysecs}");
                     await Task.Delay(TimeSpan.FromSeconds(delaysecs));
-                    await oop._pipeServer.SendAckAsync();
+                    await PipeFromServer.WriteAcknowledgeAsync();
                     return null;
                 });
 
             AddVerb(Verbs.DoSpeedTest,
-                async (oop, arg) =>
+                async (arg) =>
                 {
-                    await oop._pipeClient.WriteVerbAsync(Verbs.DoSpeedTest);
+                    await PipeFromClient.WriteVerbAsync(Verbs.DoSpeedTest);
                     var bufSpeed = (byte[])arg;
                     var bufSize = (UInt32)bufSpeed.Length;
-                    oop._pipeClient.WriteUInt32(bufSize);
-                    await oop._pipeClient.WriteAsync(bufSpeed, 0, bufSpeed.Length);
-                    await oop._pipeClient.GetAckAsync();
+                    PipeFromClient.WriteUInt32(bufSize);
+                    await PipeFromClient.WriteAsync(bufSpeed, 0, bufSpeed.Length);
+                    await PipeFromClient.ReadAcknowledgeAsync();
                     return null;
                 },
-                async (oop, arg) =>
+                async (arg) =>
                 {
-                    await oop._pipeServer.SendAckAsync();
-                    var bufSize = oop._pipeServer.ReadUInt32();
+                    await PipeFromServer.WriteAcknowledgeAsync();
+                    var bufSize = PipeFromServer.ReadUInt32();
                     var buf = new byte[bufSize];
-                    await oop._pipeServer.ReadAsync(buf, 0, (int)bufSize);
+                    await PipeFromServer.ReadAsync(buf, 0, (int)bufSize);
                     Trace.WriteLine($"Server: got bytes {bufSize:n0}");
-                    await oop._pipeServer.SendAckAsync();
+                    await PipeFromServer.WriteAcknowledgeAsync();
                     return null;
                 });
 
             AddVerb(Verbs.SendObjAndReferences,
-                async (oop, arg) =>
+                async (arg) =>
                 {
                     var tup = (Tuple<uint, List<uint>>)arg;
                     var numChildren = tup.Item2?.Count ?? 0;
-                    _pipeClient.WriteByte((byte)Verbs.SendObjAndReferences);
-                    _pipeClient.WriteUInt32(tup.Item1);
-                    _pipeClient.WriteUInt32((uint)numChildren);
+                    PipeFromClient.WriteByte((byte)Verbs.SendObjAndReferences);
+                    PipeFromClient.WriteUInt32(tup.Item1);
+                    PipeFromClient.WriteUInt32((uint)numChildren);
 
                     for (int iChild = 0; iChild < numChildren; iChild++)
                     {
-                        _pipeClient.WriteUInt32(tup.Item2[iChild]);
+                        PipeFromClient.WriteUInt32(tup.Item2[iChild]);
                     }
-                    await _pipeClient.GetAckAsync();
+                    await PipeFromClient.ReadAcknowledgeAsync();
                     return null;
                 },
-                async (oop, arg) =>
+                async (arg) =>
                 {
                     var lst = new List<uint>();
-                    var obj = _pipeServer.ReadUInt32();
-                    var cnt = _pipeServer.ReadUInt32();
+                    var obj = PipeFromServer.ReadUInt32();
+                    var cnt = PipeFromServer.ReadUInt32();
                     for (int i = 0; i < cnt; i++)
                     {
-                        lst.Add(_pipeServer.ReadUInt32());
+                        lst.Add(PipeFromServer.ReadUInt32());
                     }
                     dictObjRef[obj] = lst;
                     Trace.WriteLine($"Server got {nameof(Verbs.SendObjAndReferences)}  {obj:x8} # child = {cnt:n0}");
-                    await oop._pipeServer.SendAckAsync();
+                    await PipeFromServer.WriteAcknowledgeAsync();
                     return null;
                 });
 
             AddVerb(Verbs.SendObjAndReferencesInChunks,
-                async (oop, arg) =>
+                async (arg) =>
                 {
-                    await oop._pipeClient.WriteVerbAsync(Verbs.SendObjAndReferencesInChunks);
+                    await PipeFromClient.WriteVerbAsync(Verbs.SendObjAndReferencesInChunks);
 
                     var tup = (Tuple<byte[], int>)arg;
 
                     var bufChunk = tup.Item1;
                     var ndxbufChunk = tup.Item2;
-                    oop._pipeClient.WriteUInt32((uint)ndxbufChunk);
-                    await oop._pipeClient.WriteAsync(bufChunk, 0, ndxbufChunk);
-                    await oop._pipeClient.GetAckAsync();
+                    PipeFromClient.WriteUInt32((uint)ndxbufChunk);
+                    await PipeFromClient.WriteAsync(bufChunk, 0, ndxbufChunk);
+                    await PipeFromClient.ReadAcknowledgeAsync();
                     return null;
                 },
-                async (oop, arg) =>
+                async (arg) =>
                 {
-                    await oop._pipeServer.SendAckAsync();
-                    var bufSize = (int)oop._pipeServer.ReadUInt32();
+                    await PipeFromServer.WriteAcknowledgeAsync();
+                    var bufSize = (int)PipeFromServer.ReadUInt32();
                     var buf = new byte[bufSize];
-                    await _pipeServer.ReadAsync(buf, 0, (int)bufSize);
+                    await PipeFromServer.ReadAsync(buf, 0, (int)bufSize);
 
                     var bufNdx = 0;
                     while (true)
@@ -227,34 +257,34 @@ namespace MapFileDict
                         }
                         dictObjRef[obj] = lst;
                     }
-                    await oop._pipeServer.SendAckAsync();
+                    await PipeFromServer.WriteAcknowledgeAsync();
                     return null;
                 });
 
             AddVerb(Verbs.CreateInvertedDictionary,
-                async (oop, arg) =>
+                async (arg) =>
                 {
-                    await oop._pipeClient.WriteVerbAsync(Verbs.CreateInvertedDictionary);
-                    var res = await oop._pipeClient.ReadStringAsAsciiAsync();
+                    await PipeFromClient.WriteVerbAsync(Verbs.CreateInvertedDictionary);
+                    var res = await PipeFromClient.ReadStringAsAsciiAsync();
                     return res;
                 },
-                async (oop, arg) =>
+                async (arg) =>
                 {
                     dictInverted = InvertDictionary(dictObjRef);
-                    await _pipeServer.SendAckAsync();
+                    await PipeFromServer.WriteAcknowledgeAsync();
                     return null;
                 });
 
 
             AddVerb(Verbs.QueryParentOfObject,
-                async (oop, arg) =>
+                async (arg) =>
                 {
-                    await oop._pipeClient.WriteVerbAsync(Verbs.QueryParentOfObject);
-                    _pipeClient.WriteUInt32((uint)arg);
+                    await PipeFromClient.WriteVerbAsync(Verbs.QueryParentOfObject);
+                    PipeFromClient.WriteUInt32((uint)arg);
                     var lstParents = new List<uint>();
                     while (true)
                     {
-                        var parent = _pipeClient.ReadUInt32();
+                        var parent = PipeFromClient.ReadUInt32();
                         if (parent == 0)
                         {
                             break;
@@ -263,10 +293,10 @@ namespace MapFileDict
                     }
                     return lstParents;
                 },
-                async (oop, arg) =>
+                async (arg) =>
                 {
-                    await _pipeServer.SendAckAsync();
-                    var objQuery = _pipeServer.ReadUInt32();
+                    await PipeFromServer.WriteAcknowledgeAsync();
+                    var objQuery = PipeFromServer.ReadUInt32();
                     if (dictInverted.TryGetValue(objQuery, out var lstParents))
                     {
                         var numParents = lstParents?.Count;
@@ -275,11 +305,11 @@ namespace MapFileDict
                         {
                             foreach (var parent in lstParents)
                             {
-                                _pipeServer.WriteUInt32(parent);
+                                PipeFromServer.WriteUInt32(parent);
                             }
                         }
                     }
-                    _pipeServer.WriteUInt32(0); // terminator
+                    PipeFromServer.WriteUInt32(0); // terminator
                     await Task.Yield();// need an await in method
                     return null;
                 });

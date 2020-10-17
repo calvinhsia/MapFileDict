@@ -4,11 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.IO.MemoryMappedFiles;
 using System.IO.Pipes;
-using System.Linq;
 using System.Reflection;
-using System.Runtime.InteropServices;
-using System.Runtime.Serialization;
-using System.Runtime.Serialization.Formatters.Binary;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -29,8 +25,10 @@ namespace MapFileDict
         public IntPtr _MemoryMappedRegionAddress;// the address of the shared region. Will probably be different for client and for server
         protected int pidClient;
         protected MyTraceListener mylistener;
-        public NamedPipeClientStream _pipeClient; // non-null for client
-        public NamedPipeServerStream _pipeServer; // non-null for server
+        private NamedPipeClientStream _pipeFromClient; // non-null for client
+        private NamedPipeServerStream _pipeFromServer; // non-null for server
+        public NamedPipeClientStream PipeFromClient { get { return _pipeFromClient; } private set { _pipeFromClient = value; } }
+        public NamedPipeServerStream PipeFromServer { get { return _pipeFromServer; } private set { _pipeFromServer = value; } }
 
         public Dictionary<object, object> dictProperties = new Dictionary<object, object>();
         public Dictionary<Verbs, ActionHolder> _dictVerbs = new Dictionary<Verbs, ActionHolder>();
@@ -43,12 +41,11 @@ namespace MapFileDict
         public OutOfProcBase(int PidClient, CancellationToken token) // this ctor is for client side
         {
             this.Initialize(PidClient, token);
-            _pipeClient = new NamedPipeClientStream(
+            PipeFromClient = new NamedPipeClientStream(
                 serverName: ".",
                 pipeName: pipeName,
                 direction: PipeDirection.InOut,
                 options: PipeOptions.Asynchronous);
-
         }
 
         private void Initialize(int pidClient, CancellationToken token)
@@ -68,10 +65,14 @@ namespace MapFileDict
             return IntPtr.Zero != _MemoryMappedRegionAddress;
         }
 
-        public static Process CreateServer(int pidClient)
+        public static Process CreateServer(int pidClient, 
+                string exeNameToCreate = "",
+                PortableExecutableKinds portableExecutableKinds = PortableExecutableKinds.PE32Plus,
+                ImageFileMachine imageFileMachine =  ImageFileMachine.AMD64
+            )
         {
             // sometimes using Temp file in temp dir causes System.ComponentModel.Win32Exception: Operation did not complete successfully because the file contains a virus or potentially unwanted software
-            var asm64BitFile = new FileInfo(Path.ChangeExtension("tempasm", ".exe")).FullName;
+            var asm64BitFile =string.IsNullOrEmpty(exeNameToCreate) ? new FileInfo(Path.ChangeExtension("tempasm", ".exe")).FullName : exeNameToCreate;
             var createIt = true;
             try
             {
@@ -140,7 +141,7 @@ namespace MapFileDict
                     options: PipeOptions.Asynchronous
                     ))
                 {
-                    _pipeServer = pipeServer;
+                    PipeFromServer = pipeServer;
                     Trace.WriteLine($"Server: wait for connection IntPtr.Size={IntPtr.Size}");
                     await pipeServer.WaitForConnectionAsync(token);
                     Trace.WriteLine($"Server: connected");
@@ -171,39 +172,11 @@ namespace MapFileDict
                                             receivedQuit = true;
                                         }
                                     }
-                                    continue;
                                 }
-                                switch ((Verbs)buff[0])
+                                else
                                 {
-                                    case Verbs.ServerQuit:
-                                        await pipeServer.SendAckAsync();
-                                        Trace.WriteLine($"Server got quit message");
-                                        receivedQuit = true;
-                                        break;
-                                    //case Verbs.QueryParentOfObject:
-                                    //    var objQuery = pipeServer.ReadUInt32();
-                                    //    if (dictInverted.TryGetValue(objQuery, out var lstParents))
-                                    //    {
-                                    //        var numParents = lstParents?.Count;
-                                    //        Trace.WriteLine($"Server: {objQuery:x8}  NumParents={numParents}");
-                                    //        if (numParents > 0)
-                                    //        {
-                                    //            foreach (var parent in lstParents)
-                                    //            {
-                                    //                pipeServer.WriteUInt32(parent);
-                                    //            }
-                                    //        }
-                                    //    }
-                                    //    pipeServer.WriteUInt32(0); // terminator
-                                    //    break;
-                                    case Verbs.GetStringSharedMem:
-                                        var len = Marshal.ReadIntPtr(_MemoryMappedRegionAddress);
-                                        var str = Marshal.PtrToStringAnsi(_MemoryMappedRegionAddress + IntPtr.Size, len.ToInt32());
-                                        Trace.WriteLine($"Server: SharedMemStr {str}");
-                                        break;
-                                    default:
-                                        Trace.WriteLine($"Received unknown Verb: this indicates a violation of pipe communications. Comm is broken, so terminating");
-                                        throw new Exception($"Received unknown Verb {buff[0]}");
+                                    Trace.WriteLine($"Received unknown Verb: this indicates a violation of pipe communications. Comm is broken, so terminating");
+                                    throw new Exception($"Received unknown Verb {buff[0]}");
                                 }
                             }
                             catch (Exception ex)
@@ -272,8 +245,8 @@ namespace MapFileDict
             Trace.WriteLine($"IntPtr.Size = {IntPtr.Size} Shared Memory region address 0x{_MemoryMappedRegionAddress.ToInt64():x16}");
         }
         public void AddVerb(Verbs verb,
-            Func<OutOfProcBase, object, Task<object>> actClient,
-            Func<OutOfProcBase, object, Task<object>> actServer)
+            Func<object, Task<object>> actClient,
+            Func<object, Task<object>> actServer)
         {
             _dictVerbs[verb] = new ActionHolder()
             {
@@ -283,12 +256,12 @@ namespace MapFileDict
         }
         public async Task<object> ClientCallServerWithVerb(Verbs verb, object parm)
         {
-            var result = await _dictVerbs[verb].actionClientCallServer(this, parm);
+            var result = await _dictVerbs[verb].actionClientCallServer(parm);
             return result;
         }
         public async Task<object> ServerCallClientWithVerb(Verbs verb, object parm)
         {
-            var result = await _dictVerbs[verb].actionServerCallClient(this, parm);
+            var result = await _dictVerbs[verb].actionServerCallClient(parm);
             return result;
         }
 
@@ -304,6 +277,12 @@ namespace MapFileDict
             _MemoryMappedFileViewForSharedRegion?.Dispose();
             _MemoryMappedFileForSharedRegion?.Dispose();
             mylistener?.Dispose();
+        }
+        public class ActionHolder
+        {
+            public Verbs verb;
+            public Func<object, Task<object>> actionClientCallServer;
+            public Func<object, Task<object>> actionServerCallClient;
         }
 
         static MyExecutionContext CreateExecutionContext(TaskCompletionSource<int> tcsStaThread)
@@ -407,22 +386,16 @@ namespace MapFileDict
             }
         }
     }
-    public class ActionHolder
-    {
-        public Verbs verb;
-        public Func<OutOfProcBase, object, Task<object>> actionClientCallServer;
-        public Func<OutOfProcBase, object, Task<object>> actionServerCallClient;
-    }
 
     public static class ExtensionMethods
     {
-        public static async Task SendAckAsync(this PipeStream pipe)
+        public static async Task WriteAcknowledgeAsync(this PipeStream pipe)
         {
             var verb = new byte[2];
             verb[0] = (byte)Verbs.Acknowledge;
             await pipe.WriteAsync(verb, 0, 1);
         }
-        public static async Task GetAckAsync(this PipeStream pipe)
+        public static async Task ReadAcknowledgeAsync(this PipeStream pipe)
         {
             var buff = new byte[10];
             var len = await pipe.ReadAsync(buff, 0, 1);
@@ -437,7 +410,7 @@ namespace MapFileDict
         public static async Task WriteVerbAsync(this PipeStream pipe, Verbs verb)
         {
             pipe.WriteByte((byte)verb);
-            await pipe.GetAckAsync();
+            await pipe.ReadAcknowledgeAsync();
         }
         public static void WriteUInt32(this PipeStream pipe, uint addr)
         {
