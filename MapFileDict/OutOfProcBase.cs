@@ -35,8 +35,8 @@ namespace MapFileDict
         public struct ActionHolder
         {
             public Verbs verb;
-            public Func<object, Task<object>> actionClientCallServer;
-            public Func<object, Task<object>> actionServerCallClient;
+            public Func<object, Task<object>> actionClientSendVerb;
+            public Func<object, Task<object>> actionServerDoVerb;
         }
 
         public OutOfProcBase() // need a parameterless constructor for Activator when creating server proc
@@ -70,7 +70,7 @@ namespace MapFileDict
             return IntPtr.Zero != _MemoryMappedRegionAddress;
         }
 
-        public static Process CreateServer(int pidClient,
+        public static Process CreateServerProcess(int pidClient,
                 string exeNameToCreate = "",
                 PortableExecutableKinds portableExecutableKinds = PortableExecutableKinds.PE32Plus,
                 ImageFileMachine imageFileMachine = ImageFileMachine.AMD64
@@ -130,6 +130,7 @@ namespace MapFileDict
                 }
                 Trace.WriteLine($"End of OOP loop");
                 tcsStaThread.SetResult(0);
+                execContext.Dispatcher.BeginInvokeShutdown(DispatcherPriority.Normal);
             });
             await tcsStaThread.Task;
         }
@@ -159,21 +160,19 @@ namespace MapFileDict
                     using (var ctsReg = token.Register(
                            () => { PipeFromServer.Disconnect(); Trace.WriteLine("Cancel: disconnect pipe"); }))
                     {
-
                         while (!receivedQuit)
                         {
-                            if (token.IsCancellationRequested)
-                            {
-                                Trace.WriteLine("server: got cancel");
-                                receivedQuit = true;
-                            }
-                            var nBytesRead = await PipeFromServer.ReadAsync(buff, 0, 1, token);
                             try
                             {
-                                var verb = (Verbs)buff[0];
+                                if (token.IsCancellationRequested)
+                                {
+                                    Trace.WriteLine("server: got cancel");
+                                    receivedQuit = true;
+                                }
+                                var verb = (Verbs)PipeFromServer.ReadByte();
                                 if (_dictVerbs.ContainsKey(verb))
                                 {
-                                    var res = await ServerCallClientWithVerb(verb, null);
+                                    var res = await ServerDoVerb(verb, null);
                                     if (res is Verbs)
                                     {
                                         if ((Verbs)res == Verbs.ServerQuit)
@@ -228,7 +227,7 @@ namespace MapFileDict
             }
             if (pidClient != Process.GetCurrentProcess().Id)
             {
-                Environment.Exit(0);
+//                Environment.Exit(0);
             }
         }
         /// <summary>
@@ -258,24 +257,22 @@ namespace MapFileDict
             Trace.WriteLine($"IntPtr.Size = {IntPtr.Size} Shared Memory region address 0x{_MemoryMappedRegionAddress.ToInt64():x16}");
         }
         public void AddVerb(Verbs verb,
-            Func<object, Task<object>> actClient,
-            Func<object, Task<object>> actServer)
+            Func<object, Task<object>> actClientSendVerb,
+            Func<object, Task<object>> actServerDoVerb)
         {
             _dictVerbs.Add(verb, new ActionHolder() // throws if already exists
             {
-                actionClientCallServer = actClient,
-                actionServerCallClient = actServer
+                actionClientSendVerb = actClientSendVerb,
+                actionServerDoVerb = actServerDoVerb
             });
         }
-        public async Task<object> ClientCallServerWithVerb(Verbs verb, object parm)
+        public Task<object> ClientSendVerb(Verbs verb, object parm)
         {
-            var result = await _dictVerbs[verb].actionClientCallServer(parm);
-            return result;
+            return _dictVerbs[verb].actionClientSendVerb(parm);
         }
-        public async Task<object> ServerCallClientWithVerb(Verbs verb, object parm)
+        public Task<object> ServerDoVerb(Verbs verb, object parm)
         {
-            var result = await _dictVerbs[verb].actionServerCallClient(parm);
-            return result;
+            return _dictVerbs[verb].actionServerDoVerb(parm);
         }
 
         public void Dispose()
