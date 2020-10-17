@@ -18,7 +18,7 @@ namespace MapFileDict
         GetString, // very slow
         GetStringSharedMem, // very fast
         DoSpeedTest,
-        verbRequestData, // len = 1 byte: 0 args
+        verbRequestData, // for testing
         SendObjAndReferences, // a single obj and a list of it's references
         SendObjAndReferencesInChunks, // yields perf gains: from 5k objs/sec to 1M/sec
         CreateInvertedDictionary, // Create an inverte dict. From the dict of Obj=> list of child objs ref'd by the obj, it creates a new
@@ -52,12 +52,12 @@ namespace MapFileDict
         void AddVerbs()
         {
             AddVerb(Verbs.ServerQuit,
-                 async (arg) =>
+                 actClient: async (arg) =>
                  {
                      await PipeFromClient.WriteVerbAsync(Verbs.ServerQuit);
                      return null;
                  },
-                 async (arg) =>
+                 actServer: async (arg) =>
                  {
                      Trace.WriteLine($"# dict entries = {dictObjRef.Count}");
                      await PipeFromServer.WriteAcknowledgeAsync();
@@ -65,13 +65,13 @@ namespace MapFileDict
                  });
 
             AddVerb(Verbs.GetLog,
-                async (arg) =>
+                actClient: async (arg) =>
                 {
                     await PipeFromClient.WriteVerbAsync(Verbs.GetLog);
                     var logstrs = await PipeFromClient.ReadStringAsAsciiAsync();
                     return logstrs as string;
                 },
-                async (arg) =>
+                actServer: async (arg) =>
                 {
                     await PipeFromServer.WriteAcknowledgeAsync();
                     var strlog = string.Empty;
@@ -88,7 +88,7 @@ namespace MapFileDict
                 });
 
             AddVerb(Verbs.CreateSharedMemSection,
-                async (arg) =>
+                actClient: async (arg) =>
                 {
                     var sharedRegionSize = (uint)arg;
                     await PipeFromClient.WriteVerbAsync(Verbs.CreateSharedMemSection);
@@ -97,7 +97,7 @@ namespace MapFileDict
                     CreateSharedSection(memRegionName, sharedRegionSize); // now map that region into the client
                     return null;
                 },
-                async (arg) =>
+                actServer: async (arg) =>
                 {
                     await PipeFromServer.WriteAcknowledgeAsync();
                     var sizeRegion = PipeFromServer.ReadUInt32();
@@ -108,41 +108,40 @@ namespace MapFileDict
                 });
 
             AddVerb(Verbs.GetStringSharedMem,
-                async (arg) =>
+                actClient: async (arg) =>
                 {
                     await PipeFromClient.WriteVerbAsync(Verbs.GetStringSharedMem);
                     var lenstr = PipeFromClient.ReadUInt32();
                     var str = Marshal.PtrToStringAnsi(_MemoryMappedRegionAddress, (int)lenstr);
                     return str;
                 },
-                async (arg) =>
+                actServer: async (arg) =>
                 {
                     await PipeFromServer.WriteAcknowledgeAsync();
                     var strg = new string('a', 10000);
                     var bytes = Encoding.ASCII.GetBytes(strg);
                     Marshal.Copy(bytes, 0, _MemoryMappedRegionAddress, bytes.Length);
                     PipeFromServer.WriteUInt32((uint)bytes.Length);
-
                     return null;
                 });
 
-
             AddVerb(Verbs.verbRequestData,
-                async (arg) =>
+                actClient: async (arg) =>
                 {
                     await PipeFromClient.WriteVerbAsync(Verbs.verbRequestData);
                     var res = await PipeFromClient.ReadStringAsAsciiAsync();
                     return res;
                 },
-                async (arg) =>
+                actServer: async (arg) =>
                 {
                     await PipeFromServer.WriteAcknowledgeAsync();
-                    await PipeFromServer.WriteStringAsAsciiAsync(DateTime.Now.ToString() + $" IntPtr.Size= {IntPtr.Size} {Process.GetCurrentProcess().MainModule.FileName}");
+                    await PipeFromServer.WriteStringAsAsciiAsync(
+                        DateTime.Now.ToString() + $" IntPtr.Size= {IntPtr.Size} {Process.GetCurrentProcess().MainModule.FileName}");
                     return null;
                 });
 
             AddVerb(Verbs.Delay,
-                async (arg) =>
+                actClient: async (arg) =>
                 {
                     await PipeFromClient.WriteVerbAsync(Verbs.Delay);
                     byte delaysecs = (byte)arg;
@@ -151,7 +150,7 @@ namespace MapFileDict
                     await PipeFromClient.ReadAcknowledgeAsync();
                     return null;
                 },
-                async (arg) =>
+                actServer: async (arg) =>
                 {
                     await PipeFromServer.WriteAcknowledgeAsync();
                     var delaysecs = PipeFromServer.ReadByte();
@@ -162,7 +161,7 @@ namespace MapFileDict
                 });
 
             AddVerb(Verbs.DoSpeedTest,
-                async (arg) =>
+                actClient: async (arg) =>
                 {
                     await PipeFromClient.WriteVerbAsync(Verbs.DoSpeedTest);
                     var bufSpeed = (byte[])arg;
@@ -172,26 +171,25 @@ namespace MapFileDict
                     await PipeFromClient.ReadAcknowledgeAsync();
                     return null;
                 },
-                async (arg) =>
+                actServer: async (arg) =>
                 {
                     await PipeFromServer.WriteAcknowledgeAsync();
                     var bufSize = PipeFromServer.ReadUInt32();
                     var buf = new byte[bufSize];
                     await PipeFromServer.ReadAsync(buf, 0, (int)bufSize);
-                    Trace.WriteLine($"Server: got bytes {bufSize:n0}");
+                    Trace.WriteLine($"Server: got bytes {bufSize:n0}"); // 1.2G/sec raw pipe speed
                     await PipeFromServer.WriteAcknowledgeAsync();
                     return null;
                 });
 
             AddVerb(Verbs.SendObjAndReferences,
-                async (arg) =>
+                actClient: async (arg) =>
                 {
                     var tup = (Tuple<uint, List<uint>>)arg;
                     var numChildren = tup.Item2?.Count ?? 0;
                     PipeFromClient.WriteByte((byte)Verbs.SendObjAndReferences);
                     PipeFromClient.WriteUInt32(tup.Item1);
                     PipeFromClient.WriteUInt32((uint)numChildren);
-
                     for (int iChild = 0; iChild < numChildren; iChild++)
                     {
                         PipeFromClient.WriteUInt32(tup.Item2[iChild]);
@@ -199,7 +197,7 @@ namespace MapFileDict
                     await PipeFromClient.ReadAcknowledgeAsync();
                     return null;
                 },
-                async (arg) =>
+                actServer: async (arg) =>
                 {
                     var lst = new List<uint>();
                     var obj = PipeFromServer.ReadUInt32();
@@ -214,13 +212,12 @@ namespace MapFileDict
                     return null;
                 });
 
+            //Need to send 10s of millions of objs: sending in chunks is much faster than one at a time.
             AddVerb(Verbs.SendObjAndReferencesInChunks,
-                async (arg) =>
+                actClient: async (arg) =>
                 {
                     await PipeFromClient.WriteVerbAsync(Verbs.SendObjAndReferencesInChunks);
-
                     var tup = (Tuple<byte[], int>)arg;
-
                     var bufChunk = tup.Item1;
                     var ndxbufChunk = tup.Item2;
                     PipeFromClient.WriteUInt32((uint)ndxbufChunk);
@@ -228,13 +225,12 @@ namespace MapFileDict
                     await PipeFromClient.ReadAcknowledgeAsync();
                     return null;
                 },
-                async (arg) =>
+                actServer: async (arg) =>
                 {
                     await PipeFromServer.WriteAcknowledgeAsync();
                     var bufSize = (int)PipeFromServer.ReadUInt32();
                     var buf = new byte[bufSize];
                     await PipeFromServer.ReadAsync(buf, 0, (int)bufSize);
-
                     var bufNdx = 0;
                     while (true)
                     {
@@ -262,12 +258,12 @@ namespace MapFileDict
                 });
 
             AddVerb(Verbs.CreateInvertedDictionary,
-                async (arg) =>
+                actClient: async (arg) =>
                 {
                     await PipeFromClient.WriteVerbAsync(Verbs.CreateInvertedDictionary);
                     return null;
                 },
-                async (arg) =>
+                actServer: async (arg) =>
                 {
                     dictInverted = InvertDictionary(dictObjRef);
                     await PipeFromServer.WriteAcknowledgeAsync();
@@ -276,7 +272,7 @@ namespace MapFileDict
 
 
             AddVerb(Verbs.QueryParentOfObject,
-                async (arg) =>
+                actClient: async (arg) =>
                 {
                     await PipeFromClient.WriteVerbAsync(Verbs.QueryParentOfObject);
                     PipeFromClient.WriteUInt32((uint)arg);
@@ -292,7 +288,7 @@ namespace MapFileDict
                     }
                     return lstParents;
                 },
-                async (arg) =>
+                actServer: async (arg) =>
                 {
                     await PipeFromServer.WriteAcknowledgeAsync();
                     var objQuery = PipeFromServer.ReadUInt32();
@@ -309,7 +305,6 @@ namespace MapFileDict
                         }
                     }
                     PipeFromServer.WriteUInt32(0); // terminator
-                    await Task.Yield();// need an await in method
                     return null;
                 });
 
@@ -339,8 +334,6 @@ namespace MapFileDict
                     // 0450ee60 Roslyn.Utilities.StringTable+Entry[]
                     // 0460eea0 Microsoft.CodeAnalysis.VisualBasic.Syntax.InternalSyntax.SyntaxNodeCache+Entry[]
                     // 049b90e0 Microsoft.CodeAnalysis.SyntaxNode[]
-
-
                     Trace.WriteLine($"The cur obj {tup.Item1:x8} size={numBytesForThisObj} is too big for chunk {bufChunkSize}: sending via non-chunk");
                     await ClientCallServerWithVerb(Verbs.SendObjAndReferences, tup);
                 }
@@ -382,11 +375,6 @@ namespace MapFileDict
             }
         }
 
-        internal async Task ConnectAsync(CancellationToken token)
-        {
-            await PipeFromClient.ConnectAsync(token);
-        }
-
         public static Dictionary<uint, List<uint>> InvertDictionary(Dictionary<uint, List<uint>> dictOGraph)
         {
             var dictInvert = new Dictionary<uint, List<uint>>(capacity: dictOGraph.Count); // obj ->list of objs that reference it
@@ -421,7 +409,5 @@ namespace MapFileDict
 
             return dictInvert;
         }
-
     }
-
 }

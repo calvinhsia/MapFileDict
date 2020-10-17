@@ -16,23 +16,28 @@ namespace MapFileDict
     public abstract class OutOfProcBase : IDisposable
     {
         private CancellationToken token;
-        public string pipeName;
+        private string pipeName;
 
         public uint _sharedMapSize;
-        public string _sharedFileMapName;
+        protected string _sharedFileMapName;
         MemoryMappedFile _MemoryMappedFileForSharedRegion;
         MemoryMappedViewAccessor _MemoryMappedFileViewForSharedRegion;
         public IntPtr _MemoryMappedRegionAddress;// the address of the shared region. Will probably be different for client and for server
         protected int pidClient;
         protected MyTraceListener mylistener;
-        private NamedPipeClientStream _pipeFromClient; // non-null for client
-        private NamedPipeServerStream _pipeFromServer; // non-null for server
-        protected NamedPipeClientStream PipeFromClient { get { return _pipeFromClient; } private set { _pipeFromClient = value; } }
-        protected NamedPipeServerStream PipeFromServer { get { return _pipeFromServer; } private set { _pipeFromServer = value; } }
+
+        protected NamedPipeClientStream PipeFromClient { get; private set; } // non-null for client
+        protected NamedPipeServerStream PipeFromServer { get; private set ; } // non-null for server
 
         public Dictionary<object, object> dictProperties = new Dictionary<object, object>();
         public Dictionary<Verbs, ActionHolder> _dictVerbs = new Dictionary<Verbs, ActionHolder>();
 
+        public struct ActionHolder
+        {
+            public Verbs verb;
+            public Func<object, Task<object>> actionClientCallServer;
+            public Func<object, Task<object>> actionServerCallClient;
+        }
 
         public OutOfProcBase() // need a parameterless constructor for Activator when creating server proc
         {
@@ -65,14 +70,14 @@ namespace MapFileDict
             return IntPtr.Zero != _MemoryMappedRegionAddress;
         }
 
-        public static Process CreateServer(int pidClient, 
+        public static Process CreateServer(int pidClient,
                 string exeNameToCreate = "",
                 PortableExecutableKinds portableExecutableKinds = PortableExecutableKinds.PE32Plus,
-                ImageFileMachine imageFileMachine =  ImageFileMachine.AMD64
+                ImageFileMachine imageFileMachine = ImageFileMachine.AMD64
             )
         {
             // sometimes using Temp file in temp dir causes System.ComponentModel.Win32Exception: Operation did not complete successfully because the file contains a virus or potentially unwanted software
-            var asm64BitFile =string.IsNullOrEmpty(exeNameToCreate) ? new FileInfo(Path.ChangeExtension("tempasm", ".exe")).FullName : exeNameToCreate;
+            var asm64BitFile = string.IsNullOrEmpty(exeNameToCreate) ? new FileInfo(Path.ChangeExtension("tempasm", ".exe")).FullName : exeNameToCreate;
             var createIt = true;
             try
             {
@@ -108,7 +113,7 @@ namespace MapFileDict
             return procServer;
         }
         /// <summary>
-        /// This runs in the 64 bit server process
+        /// This is entry point in the 64 bit server process. Create an execution context for the asyncs
         /// </summary>
         public static async Task MyMainMethod(int pidClient)
         {
@@ -128,27 +133,31 @@ namespace MapFileDict
             });
             await tcsStaThread.Task;
         }
+        public Task ConnectAsync(CancellationToken token)
+        {
+            return PipeFromClient.ConnectAsync(token);
+        }
+
         public async Task DoServerLoopAsync()
         {
             try
             {
                 Trace.WriteLine("Server: Starting ");
-                using (var pipeServer = new NamedPipeServerStream(
+                PipeFromServer = new NamedPipeServerStream(
                     pipeName: pipeName,
                     direction: PipeDirection.InOut,
                     maxNumberOfServerInstances: 1,
                     transmissionMode: PipeTransmissionMode.Message,
                     options: PipeOptions.Asynchronous
-                    ))
+                    );
                 {
-                    PipeFromServer = pipeServer;
                     Trace.WriteLine($"Server: wait for connection IntPtr.Size={IntPtr.Size}");
-                    await pipeServer.WaitForConnectionAsync(token);
+                    await PipeFromServer.WaitForConnectionAsync(token);
                     Trace.WriteLine($"Server: connected");
                     var buff = new byte[100];
                     var receivedQuit = false;
                     using (var ctsReg = token.Register(
-                           () => { pipeServer.Disconnect(); Trace.WriteLine("Cancel: disconnect pipe"); }))
+                           () => { PipeFromServer.Disconnect(); Trace.WriteLine("Cancel: disconnect pipe"); }))
                     {
 
                         while (!receivedQuit)
@@ -158,7 +167,7 @@ namespace MapFileDict
                                 Trace.WriteLine("server: got cancel");
                                 receivedQuit = true;
                             }
-                            var nBytesRead = await pipeServer.ReadAsync(buff, 0, 1, token);
+                            var nBytesRead = await PipeFromServer.ReadAsync(buff, 0, 1, token);
                             try
                             {
                                 var verb = (Verbs)buff[0];
@@ -207,6 +216,10 @@ namespace MapFileDict
                 mylistener?.ForceAddToLog(ex.ToString());
                 throw;
             }
+            finally
+            {
+                this.Dispose();
+            }
 
             Trace.WriteLine("Server: exiting servertask");
             if (mylistener != null)
@@ -219,7 +232,7 @@ namespace MapFileDict
             }
         }
         /// <summary>
-        /// Called from both client and server. Given a name, 
+        /// Called from both client and server. Given a name, creates memory region of specified size (mult 64k) that can be addressed by each process
         /// </summary>
         internal void CreateSharedSection(string memRegionName, uint regionSize)
         {
@@ -248,11 +261,11 @@ namespace MapFileDict
             Func<object, Task<object>> actClient,
             Func<object, Task<object>> actServer)
         {
-            _dictVerbs[verb] = new ActionHolder()
+            _dictVerbs.Add(verb, new ActionHolder() // throws if already exists
             {
                 actionClientCallServer = actClient,
                 actionServerCallClient = actServer
-            };
+            });
         }
         public async Task<object> ClientCallServerWithVerb(Verbs verb, object parm)
         {
@@ -274,17 +287,11 @@ namespace MapFileDict
                     oDisp.Dispose();
                 }
             }
-            _pipeFromClient?.Dispose();
-            _pipeFromServer?.Dispose();
+            PipeFromClient?.Dispose();
+            PipeFromServer?.Dispose();
             _MemoryMappedFileViewForSharedRegion?.Dispose();
             _MemoryMappedFileForSharedRegion?.Dispose();
             mylistener?.Dispose();
-        }
-        public class ActionHolder
-        {
-            public Verbs verb;
-            public Func<object, Task<object>> actionClientCallServer;
-            public Func<object, Task<object>> actionServerCallClient;
         }
 
         static MyExecutionContext CreateExecutionContext(TaskCompletionSource<int> tcsStaThread)
