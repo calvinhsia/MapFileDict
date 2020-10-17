@@ -265,8 +265,7 @@ namespace MapFileDict
                 async (arg) =>
                 {
                     await PipeFromClient.WriteVerbAsync(Verbs.CreateInvertedDictionary);
-                    var res = await PipeFromClient.ReadStringAsAsciiAsync();
-                    return res;
+                    return null;
                 },
                 async (arg) =>
                 {
@@ -319,7 +318,7 @@ namespace MapFileDict
         /// <summary>
         /// This runs on the client to send the data in chunks to the server
         /// </summary>
-        public async Task<Tuple<int, int>> SendObjGraphEnumerableInChunksAsync(NamedPipeClientStream pipeClient, IEnumerable<Tuple<uint, List<uint>>> ienumOGraph)
+        public async Task<Tuple<int, int>> SendObjGraphEnumerableInChunksAsync(IEnumerable<Tuple<uint, List<uint>>> ienumOGraph)
         {
             var bufChunkSize = 65536;
             var bufChunk = new byte[bufChunkSize + 4]; // leave extra room for null term
@@ -381,6 +380,11 @@ namespace MapFileDict
                 await ClientCallServerWithVerb(Verbs.SendObjAndReferencesInChunks, Tuple.Create<byte[], int>(bufChunk, ndxbufChunk));
                 numChunksSent++;
             }
+        }
+
+        internal async Task ConnectAsync(CancellationToken token)
+        {
+            await PipeFromClient.ConnectAsync(token);
         }
 
         public static Dictionary<uint, List<uint>> InvertDictionary(Dictionary<uint, List<uint>> dictOGraph)

@@ -201,18 +201,17 @@ Parents of WpfTextView   362b72e0
             {
                 var pidClient = Process.GetCurrentProcess().Id;
                 var procServer = OutOfProc.CreateServer(pidClient);
-                await DoServerStuff(procServer, pidClient, async (pipeClient, oop) =>
+                await DoServerStuff(procServer, pidClient, async (oop) =>
                 {
                     var sw = Stopwatch.StartNew();
                     var ienumOGraph = GetObjectGraphIEnumerable();
-                    var tup = await oop.SendObjGraphEnumerableInChunksAsync(pipeClient, ienumOGraph);
+                    var tup = await oop.SendObjGraphEnumerableInChunksAsync(ienumOGraph);
                     int numObjs = tup.Item1;
                     var numChunksSent = tup.Item2;
                     // the timing includes parsing the text file for obj graph
                     Trace.WriteLine($"Sent {numObjs}  #Chunks = {numChunksSent} Objs/Sec = {numObjs / sw.Elapsed.TotalSeconds:n2}"); // 5k/sec
 
-                    pipeClient.WriteByte((byte)MapFileDict.Verbs.CreateInvertedDictionary);
-                    await pipeClient.ReadAcknowledgeAsync();
+                    await oop.ClientCallServerWithVerb(Verbs.CreateInvertedDictionary, null);
                     Trace.WriteLine($"Inverted Dictionary");
 
                     await oop.ClientCallServerWithVerb(Verbs.CreateSharedMemSection, 65536U);
@@ -249,26 +248,26 @@ WpfTextView 362b72e0  has 221 parents
                 {
                     try
                     {
-                        await oop.PipeFromClient.ConnectAsync(cts.Token);
+                        await oop.ConnectAsync(cts.Token);
 
                         await oop.ClientCallServerWithVerb(Verbs.CreateSharedMemSection, 65536U);
 
                         var sw = Stopwatch.StartNew();
                         var ienumOGraph = GetObjectGraphIEnumerable();
-                        var tup = await oop.SendObjGraphEnumerableInChunksAsync(oop.PipeFromClient, ienumOGraph);
+                        var tup = await oop.SendObjGraphEnumerableInChunksAsync(ienumOGraph);
                         int numObjs = tup.Item1;
                         var numChunksSent = tup.Item2;
                         // the timing includes parsing the text file for obj graph
                         Trace.WriteLine($"Sent {numObjs}  #Chunks = {numChunksSent} Objs/Sec = {numObjs / sw.Elapsed.TotalSeconds:n2}"); // 5k/sec
 
-                        oop.PipeFromClient.WriteByte((byte)MapFileDict.Verbs.CreateInvertedDictionary);
-                        await oop.PipeFromClient.ReadAcknowledgeAsync();
+                        await oop.ClientCallServerWithVerb(Verbs.CreateInvertedDictionary, null);
                         Trace.WriteLine($"Inverted Dictionary");
+
                         await DoShowResultsFromQueryForParents(oop, SystemStackOverflowException, nameof(SystemStackOverflowException));
 
                         await DoShowResultsFromQueryForParents(oop, WpfTextView, nameof(WpfTextView));
                         Trace.WriteLine("Client: sending quit");
-                        await oop.PipeFromClient.WriteVerbAsync((byte)MapFileDict.Verbs.ServerQuit);
+                        await oop.ClientCallServerWithVerb(Verbs.ServerQuit, null);
                     }
                     catch (Exception ex)
                     {
@@ -348,7 +347,7 @@ IntPtr.Size = 8 Shared Memory region address
 
         private async Task DoTestServerStuffAsync(int pidClient, Process procServer)
         {
-            await DoServerStuff(procServer, pidClient, async (pipeClient, oop) =>
+            await DoServerStuff(procServer, pidClient, async (oop) =>
             {
                 await oop.ClientCallServerWithVerb(Verbs.CreateSharedMemSection, 65536U);
                 //                    await Task.Delay(5000);
@@ -356,7 +355,7 @@ IntPtr.Size = 8 Shared Memory region address
             });
         }
 
-        private async Task DoServerStuff(Process procServer, int pidClient, Func<NamedPipeClientStream, OutOfProc, Task> func)
+        private async Task DoServerStuff(Process procServer, int pidClient, Func<OutOfProc, Task> func)
         {
             var sw = Stopwatch.StartNew();
             var cts = new CancellationTokenSource();
@@ -364,10 +363,10 @@ IntPtr.Size = 8 Shared Memory region address
             using (var oop = new OutOfProc(pidClient, cts.Token))
             {
                 Trace.WriteLine($"Client: starting to connect");
-                await oop.PipeFromClient.ConnectAsync(cts.Token);
+                await oop.ConnectAsync(cts.Token);
                 Trace.WriteLine($"Client: connected");
-                await func(oop.PipeFromClient, oop);
-                await oop.PipeFromClient.WriteVerbAsync((byte)MapFileDict.Verbs.ServerQuit);
+                await func(oop);
+                await oop.ClientCallServerWithVerb(Verbs.ServerQuit, null);
             }
             var didKill = false;
             while (!procServer.HasExited)
@@ -415,7 +414,7 @@ IntPtr.Size = 8 Shared Memory region address
                 {
                     try
                     {
-                        await oop.PipeFromClient.ConnectAsync(cts.Token);
+                        await oop.ConnectAsync(cts.Token);
 
                         var str = await oop.ClientCallServerWithVerb(Verbs.verbRequestData, null);
                         Trace.WriteLine($"Req data {str}");

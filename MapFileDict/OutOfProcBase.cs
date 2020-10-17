@@ -27,8 +27,8 @@ namespace MapFileDict
         protected MyTraceListener mylistener;
         private NamedPipeClientStream _pipeFromClient; // non-null for client
         private NamedPipeServerStream _pipeFromServer; // non-null for server
-        public NamedPipeClientStream PipeFromClient { get { return _pipeFromClient; } private set { _pipeFromClient = value; } }
-        public NamedPipeServerStream PipeFromServer { get { return _pipeFromServer; } private set { _pipeFromServer = value; } }
+        protected NamedPipeClientStream PipeFromClient { get { return _pipeFromClient; } private set { _pipeFromClient = value; } }
+        protected NamedPipeServerStream PipeFromServer { get { return _pipeFromServer; } private set { _pipeFromServer = value; } }
 
         public Dictionary<object, object> dictProperties = new Dictionary<object, object>();
         public Dictionary<Verbs, ActionHolder> _dictVerbs = new Dictionary<Verbs, ActionHolder>();
@@ -274,6 +274,8 @@ namespace MapFileDict
                     oDisp.Dispose();
                 }
             }
+            _pipeFromClient?.Dispose();
+            _pipeFromServer?.Dispose();
             _MemoryMappedFileViewForSharedRegion?.Dispose();
             _MemoryMappedFileForSharedRegion?.Dispose();
             mylistener?.Dispose();
