@@ -26,7 +26,10 @@ namespace MapFileDict
         public string exeNameToCreate = string.Empty; // defaults to "tempasm.exe" in curdir
         public PortableExecutableKinds portableExecutableKinds = PortableExecutableKinds.PE32Plus;
         public ImageFileMachine imageFileMachine = ImageFileMachine.AMD64;
+        public string AdditionalAssemblyPaths = string.Empty;
+
         public int PidClient;
+
     }
     public abstract class OutOfProcBase : IDisposable
     {
@@ -131,9 +134,9 @@ namespace MapFileDict
             {
                 var creator = new AssemblyCreator().CreateAssembly(
                     asm64BitFile,
-                    portableExecutableKinds: System.Reflection.PortableExecutableKinds.PE32Plus, // 64 bit
-                    imageFileMachine: ImageFileMachine.AMD64,
-                    AdditionalAssemblyPaths: string.Empty,
+                    portableExecutableKinds: Options.portableExecutableKinds, // 64 bit
+                    imageFileMachine: Options.imageFileMachine,
+                    AdditionalAssemblyPaths: Options.AdditionalAssemblyPaths,
                     logOutput: true
                     );
             }
@@ -198,7 +201,7 @@ namespace MapFileDict
                     pipeName: pipeName,
                     direction: PipeDirection.InOut,
                     maxNumberOfServerInstances: 1,
-                    transmissionMode: PipeTransmissionMode.Message,
+                    transmissionMode: PipeTransmissionMode.Byte,
                     options: PipeOptions.Asynchronous
                     );
                 {
