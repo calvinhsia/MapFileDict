@@ -4,7 +4,9 @@ using System.Diagnostics;
 using System.IO;
 using System.IO.MemoryMappedFiles;
 using System.IO.Pipes;
+using System.Linq;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -13,9 +15,23 @@ using System.Windows.Threading;
 namespace MapFileDict
 {
 
+    public class OutOfProcOptions
+    {
+        public OutOfProcOptions()
+        {
+            PidClient = Process.GetCurrentProcess().Id;
+        }
+        public bool CreateServerOutOfProc = true; // or can be inproc for testing
+        public string ExistingExeNameToUseForServer = string.Empty;
+        public string exeNameToCreate = string.Empty; // defaults to "tempasm.exe" in curdir
+        public PortableExecutableKinds portableExecutableKinds = PortableExecutableKinds.PE32Plus;
+        public ImageFileMachine imageFileMachine = ImageFileMachine.AMD64;
+        public int PidClient;
+    }
     public abstract class OutOfProcBase : IDisposable
     {
         private CancellationToken token;
+        public OutOfProcOptions Options;
         private string pipeName;
 
         public uint _sharedMapSize;
@@ -23,11 +39,14 @@ namespace MapFileDict
         MemoryMappedFile _MemoryMappedFileForSharedRegion;
         MemoryMappedViewAccessor _MemoryMappedFileViewForSharedRegion;
         public IntPtr _MemoryMappedRegionAddress;// the address of the shared region. Will probably be different for client and for server
-        protected int pidClient;
+        public int pidClient => Options.PidClient;
         protected MyTraceListener mylistener;
+        public Process ProcServer { get; set; } // only if out of proc
+        public Task DoServerLoopTask; // the loop that listens for the pipe and executes verbs
+        protected TaskCompletionSource<int> tcsAddedVerbs = new TaskCompletionSource<int>(); // we wait for the verbs to be added before we start listening to the pipe
 
         protected NamedPipeClientStream PipeFromClient { get; private set; } // non-null for client
-        protected NamedPipeServerStream PipeFromServer { get; private set ; } // non-null for server
+        protected NamedPipeServerStream PipeFromServer { get; private set; } // non-null for server
 
         public Dictionary<object, object> dictProperties = new Dictionary<object, object>();
         public Dictionary<Verbs, ActionHolder> _dictVerbs = new Dictionary<Verbs, ActionHolder>();
@@ -43,41 +62,57 @@ namespace MapFileDict
         {
 
         }
-        public OutOfProcBase(int PidClient, CancellationToken token) // this ctor is for client side
+        public OutOfProcBase(OutOfProcOptions options, CancellationToken token) // this ctor is for both server and client
         {
-            this.Initialize(PidClient, token);
-            PipeFromClient = new NamedPipeClientStream(
-                serverName: ".",
-                pipeName: pipeName,
-                direction: PipeDirection.InOut,
-                options: PipeOptions.Asynchronous);
-        }
-
-        private void Initialize(int pidClient, CancellationToken token)
-        {
-            this.token = token;
-            this.pidClient = pidClient;
-            if (pidClient != Process.GetCurrentProcess().Id)
+            if (options == null)
             {
+                options = new OutOfProcOptions();
+            }
+            this.Options = options;
+            this.token = token;
+            pipeName = $"MapFileDictPipe_{pidClient}";
+            if (Process.GetCurrentProcess().Id == options.PidClient) //we're the client process?
+            {
+                PipeFromClient = new NamedPipeClientStream(
+                    serverName: ".",
+                    pipeName: pipeName,
+                    direction: PipeDirection.InOut,
+                    options: PipeOptions.Asynchronous);
+                if (options.CreateServerOutOfProc)
+                {
+                    if (!string.IsNullOrEmpty(options.ExistingExeNameToUseForServer))
+                    {
+                        var typeToInstantiateName = this.GetType().Name; // we need to get the name of the derived class to instantiate
+                        ProcServer = Process.Start(options.ExistingExeNameToUseForServer, $"{pidClient} {typeToInstantiateName}");
+                    }
+                    else
+                    {
+                        CreateServerProcess();
+                    }
+                }
+                else
+                {
+                    DoServerLoopTask = DoServerLoopAsync();
+                }
+            }
+            else
+            { //we're the server process
                 mylistener = new MyTraceListener();
                 Trace.Listeners.Add(mylistener);
-                Trace.WriteLine($"Server Trace Listener created");
+                Trace.WriteLine($"Server Process IntPtr.Size = {IntPtr.Size} Trace Listener created");
+                DoServerLoopTask = DoServerLoopAsync();
             }
-            pipeName = $"MapFileDictPipe_{pidClient}";
         }
+
         public bool IsSharedRegionCreated()
         {
             return IntPtr.Zero != _MemoryMappedRegionAddress;
         }
 
-        public static Process CreateServerProcess(int pidClient,
-                string exeNameToCreate = "",
-                PortableExecutableKinds portableExecutableKinds = PortableExecutableKinds.PE32Plus,
-                ImageFileMachine imageFileMachine = ImageFileMachine.AMD64
-            )
+        void CreateServerProcess()
         {
             // sometimes using Temp file in temp dir causes System.ComponentModel.Win32Exception: Operation did not complete successfully because the file contains a virus or potentially unwanted software
-            var asm64BitFile = string.IsNullOrEmpty(exeNameToCreate) ? new FileInfo(Path.ChangeExtension("tempasm", ".exe")).FullName : exeNameToCreate;
+            var asm64BitFile = string.IsNullOrEmpty(Options.exeNameToCreate) ? new FileInfo(Path.ChangeExtension("tempasm", ".exe")).FullName : Options.exeNameToCreate;
             var createIt = true;
             try
             {
@@ -102,31 +137,45 @@ namespace MapFileDict
                     logOutput: true
                     );
             }
+            var typeToInstantiateName = this.GetType().Name; // we need to get the name of the derived class to instantiate
+
             var args = $@"""{Assembly.GetAssembly(typeof(OutOfProcBase)).Location
                                }"" {nameof(OutOfProcBase)} {
-                                   nameof(OutOfProcBase.MyMainMethod)} {pidClient}";
+                                   nameof(OutOfProcBase.MyMainMethod)} {pidClient} {typeToInstantiateName}";
             Trace.WriteLine($"args = {args}");
-            var procServer = Process.Start(
+            ProcServer = Process.Start(
                 asm64BitFile,
                 args);
-            Trace.WriteLine($"Client: started server PidClient={pidClient} PidServer={procServer.Id}");
-            return procServer;
+            Trace.WriteLine($"Client: started server PidClient={pidClient} PidServer={ProcServer.Id} {typeToInstantiateName}");
         }
         /// <summary>
         /// This is entry point in the 64 bit server process. Create an execution context for the asyncs
         /// </summary>
-        public static async Task MyMainMethod(int pidClient)
+        public static async Task MyMainMethod(int pidClient, string typeToInstantiateName)
         {
             var tcsStaThread = new TaskCompletionSource<int>();
             var execContext = CreateExecutionContext(tcsStaThread);
             await execContext.Dispatcher.InvokeAsync(async () =>
             {
+//                MessageBox(0, $"Attach a debugger if desired {Process.GetCurrentProcess().Id} {Process.GetCurrentProcess().MainModule.FileName}", "Server Process", 0);
                 var cts = new CancellationTokenSource();
-                using (var oop = new OutOfProc(pidClient, cts.Token))
+                OutOfProcBase oop = null;
+                try
                 {
+                    var typeToInstantiate = typeof(OutOfProc).Assembly.GetTypes().Where(t => t.Name == typeToInstantiateName).FirstOrDefault();
+                    var args = new object[] { new OutOfProcOptions() { PidClient = pidClient }, new CancellationToken() };
+                    oop = (OutOfProcBase)Activator.CreateInstance(typeToInstantiate, args);
                     Trace.WriteLine($"{nameof(oop.DoServerLoopAsync)} start");
-                    await oop.DoServerLoopAsync();
+                    await oop.DoServerLoopTask;
                     Trace.WriteLine("{nameof(oop.DoServerLoopAsync)} done");
+                }
+                catch (Exception ex)
+                {
+                    Trace.WriteLine(ex.ToString());
+                }
+                finally
+                {
+                    oop?.Dispose();
                 }
                 Trace.WriteLine($"End of OOP loop");
                 tcsStaThread.SetResult(0);
@@ -139,11 +188,12 @@ namespace MapFileDict
             return PipeFromClient.ConnectAsync(token);
         }
 
-        public async Task DoServerLoopAsync()
+        async Task DoServerLoopAsync()
         {
             try
             {
                 Trace.WriteLine("Server: Starting ");
+                await tcsAddedVerbs.Task;
                 PipeFromServer = new NamedPipeServerStream(
                     pipeName: pipeName,
                     direction: PipeDirection.InOut,
@@ -155,7 +205,6 @@ namespace MapFileDict
                     Trace.WriteLine($"Server: wait for connection IntPtr.Size={IntPtr.Size}");
                     await PipeFromServer.WaitForConnectionAsync(token);
                     Trace.WriteLine($"Server: connected");
-                    var buff = new byte[100];
                     var receivedQuit = false;
                     using (var ctsReg = token.Register(
                            () => { PipeFromServer.Disconnect(); Trace.WriteLine("Cancel: disconnect pipe"); }))
@@ -184,7 +233,7 @@ namespace MapFileDict
                                 else
                                 {
                                     Trace.WriteLine($"Received unknown Verb: this indicates a violation of pipe communications. Comm is broken, so terminating");
-                                    throw new Exception($"Received unknown Verb {buff[0]}");
+                                    throw new Exception($"Received unknown Verb {verb}");
                                 }
                             }
                             catch (Exception ex)
@@ -221,14 +270,6 @@ namespace MapFileDict
             }
 
             Trace.WriteLine("Server: exiting servertask");
-            if (mylistener != null)
-            {
-                Trace.Listeners.Remove(mylistener);
-            }
-            if (pidClient != Process.GetCurrentProcess().Id)
-            {
-//                Environment.Exit(0);
-            }
         }
         /// <summary>
         /// Called from both client and server. Given a name, creates memory region of specified size (mult 64k) that can be addressed by each process
@@ -290,6 +331,8 @@ namespace MapFileDict
             _MemoryMappedFileForSharedRegion?.Dispose();
             mylistener?.Dispose();
         }
+        [DllImport("user32")]
+        public static extern int MessageBox(int hWnd, String text, String caption, uint type);
 
         static MyExecutionContext CreateExecutionContext(TaskCompletionSource<int> tcsStaThread)
         {
@@ -316,7 +359,7 @@ namespace MapFileDict
                 Trace.WriteLine($"MyStaThread before Dispatcher.run");
                 Dispatcher.Run();
                 Trace.WriteLine($"MyStaThread After Dispatcher.run");
-                tcsStaThread.SetResult(0);
+//                tcsStaThread.SetResult(0);
             })
             {
 
@@ -356,6 +399,7 @@ namespace MapFileDict
             var leftovers = string.Join("\r\n     ", lstLoggedStrings);
 
             ForceAddToLog("LeftOverLogs\r\n     " + leftovers + "\r\n");
+            Trace.Listeners.Remove(this);
         }
 
         internal void ForceAddToLog(string str)

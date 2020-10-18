@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO.Pipes;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -21,37 +22,36 @@ namespace ConsoleAppTest
 
         private async Task DoMainAsync(string[] args)
         {
-            if (args.Length == 0)
+            //            MessageBox(0, $"Attach a debugger if desired {Process.GetCurrentProcess().Id} {Process.GetCurrentProcess().MainModule.FileName}", "Server Process", 0);
+            if (args.Length != 2)
             {
                 return;
             }
             var pidClient = int.Parse(args[0]);
-
-            //*
+            var typeToInstantiateName = args[1];
             var cts = new CancellationTokenSource();
-            using (var oop = new OutOfProc(pidClient, cts.Token)) // we're inproc in the console app, but out of proc to the client
+            OutOfProcBase oop = null;
+            try
             {
-                Trace.WriteLine("CreateServerAsync start");
-                await oop.DoServerLoopAsync();
-                Trace.WriteLine("CreateServerAsync done");
-                /*/
-                var tcsStaThread = new TaskCompletionSource<int>();
-                var execContext = CreateExecutionContext(tcsStaThread);
-                await execContext.Dispatcher.InvokeAsync(async () =>
-                {
-                    var cts = new CancellationTokenSource();
-                    var oop = new OutOfProc(pidClient, OOPOption.InProc, cts.Token); // we're inproc in the console app, but out of proc to the client
-                    Trace.WriteLine("CreateServerAsync start");
-                    await oop.CreateServerAsync();
-                    Trace.WriteLine("CreateServerAsync done");
-                    tcsStaThread.SetResult(0);
-                });
-                await tcsStaThread.Task;
-                //*/
+                var typeToInstantiate = typeof(OutOfProc).Assembly.GetTypes().Where(t => t.Name == typeToInstantiateName).FirstOrDefault();
+                var argsToPass = new object[] { new OutOfProcOptions() { PidClient = pidClient }, new CancellationToken() };
+                oop = (OutOfProcBase)Activator.CreateInstance(typeToInstantiate, argsToPass);
+                Trace.WriteLine($"DoServerLoopAsync start");
+                await oop.DoServerLoopTask;
+                Trace.WriteLine("{nameof(oop.DoServerLoopAsync)} done");
             }
-
+            catch (Exception ex)
+            {
+                Trace.WriteLine(ex.ToString());
+            }
+            finally
+            {
+                oop?.Dispose();
+            }
             Trace.WriteLine($"Server done!! {nameof(DoMainAsync)}");
         }
+        [DllImport("user32")]
+        public static extern int MessageBox(int hWnd, String text, String caption, uint type);
 
         MyExecutionContext CreateExecutionContext(TaskCompletionSource<int> tcsStaThread)
         {

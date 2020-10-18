@@ -199,28 +199,26 @@ Parents of WpfTextView   362b72e0
         {
             try
             {
-                var pidClient = Process.GetCurrentProcess().Id;
-                var procServer = OutOfProc.CreateServerProcess(pidClient);
-                await DoServerStuff(procServer, pidClient, async (oop) =>
-                {
-                    var sw = Stopwatch.StartNew();
-                    var ienumOGraph = GetObjectGraphIEnumerable();
-                    var tup = await oop.SendObjGraphEnumerableInChunksAsync(ienumOGraph);
-                    int numObjs = tup.Item1;
-                    var numChunksSent = tup.Item2;
-                    // the timing includes parsing the text file for obj graph
-                    Trace.WriteLine($"Sent {numObjs}  #Chunks = {numChunksSent} Objs/Sec = {numObjs / sw.Elapsed.TotalSeconds:n2}"); // 5k/sec
+                await DoServerStuff(options: null, func: async (oop) =>
+                 {
+                     var sw = Stopwatch.StartNew();
+                     var ienumOGraph = GetObjectGraphIEnumerable();
+                     var tup = await oop.SendObjGraphEnumerableInChunksAsync(ienumOGraph);
+                     int numObjs = tup.Item1;
+                     var numChunksSent = tup.Item2;
+                     // the timing includes parsing the text file for obj graph
+                     Trace.WriteLine($"Sent {numObjs}  #Chunks = {numChunksSent} Objs/Sec = {numObjs / sw.Elapsed.TotalSeconds:n2}"); // 5k/sec
 
-                    await oop.ClientSendVerb(Verbs.CreateInvertedDictionary, null);
-                    Trace.WriteLine($"Inverted Dictionary");
+                     await oop.ClientSendVerb(Verbs.CreateInvertedDictionary, null);
+                     Trace.WriteLine($"Inverted Dictionary");
 
-                    await oop.ClientSendVerb(Verbs.CreateSharedMemSection, 65536U);
+                     await oop.ClientSendVerb(Verbs.CreateSharedMemSection, 65536U);
 
-                    await DoShowResultsFromQueryForParents(oop, SystemStackOverflowException, nameof(SystemStackOverflowException));
-                    await DoShowResultsFromQueryForParents(oop, WpfTextView, nameof(WpfTextView));
+                     await DoShowResultsFromQueryForParents(oop, SystemStackOverflowException, nameof(SystemStackOverflowException));
+                     await DoShowResultsFromQueryForParents(oop, WpfTextView, nameof(WpfTextView));
 
-                    Trace.WriteLine($"Server Logs: " + await oop.ClientSendVerb(Verbs.GetLog, null));
-                });
+                     Trace.WriteLine($"Server Logs: " + await oop.ClientSendVerb(Verbs.GetLog, null));
+                 });
             }
             catch (Exception ex)
             {
@@ -240,10 +238,10 @@ WpfTextView 362b72e0  has 221 parents
         public async Task OOPSendObjRefsInProc()
         {
             var cts = new CancellationTokenSource();
-            using (var oop = new OutOfProc(Process.GetCurrentProcess().Id, cts.Token))
+            using (var oop = new OutOfProc(new OutOfProcOptions() { CreateServerOutOfProc = false }, cts.Token))
             {
 
-                var taskServer = oop.DoServerLoopAsync();
+                var taskServer = oop.DoServerLoopTask;
                 Trace.WriteLine("Starting Client");
                 {
                     try
@@ -315,20 +313,30 @@ WpfTextView 362b72e0  has 221 parents
         [TestMethod]
         public async Task OOPTestConsoleApp()
         {
-            var pidClient = Process.GetCurrentProcess().Id;
+            //var pidClient = Process.GetCurrentProcess().Id;
             var consapp = "ConsoleAppTest.exe";
-            var procServer = Process.Start(consapp, $"{pidClient}");
-            Trace.WriteLine($"Client: started server {procServer.Id}");
-            await DoServerStuff(procServer, pidClient, async (oop) =>
+            //var procServer = Process.Start(consapp, $"{pidClient}");
+            //Trace.WriteLine($"Client: started server {procServer.Id}");
+            var options = new OutOfProcOptions()
             {
+                ExistingExeNameToUseForServer = consapp
+            };
+            await DoServerStuff(options, async (oop) =>
+            {
+                //                await oop.ClientSendVerb(Verbs.DoMessageBox, $"Message From Client");
                 await oop.ClientSendVerb(Verbs.CreateSharedMemSection, 65536U);
+
+                for (int i = 0; i < 5; i++)
+                {
+                    await oop.ClientSendVerb(Verbs.Delayms, 300u);
+                }
                 //                    await Task.Delay(5000);
                 Trace.WriteLine($"Server Logs: " + await oop.ClientSendVerb(Verbs.GetLog, null));
             });
 
             VerifyLogStrings(@"
 Server: Getlog
-Server Trace Listener created
+IntPtr.Size = 8 Trace Listener created
 Server: Getlog #entries
 IntPtr.Size = 4 Shared Memory region address
 IntPtr.Size = 8 Shared Memory region address
@@ -338,11 +346,7 @@ IntPtr.Size = 8 Shared Memory region address
         [TestMethod]
         public async Task OOPTestGenAsm()
         {
-            var pidClient = Process.GetCurrentProcess().Id;
-
-            var procServer = OutOfProcBase.CreateServerProcess(pidClient);
-            Trace.WriteLine($"Client: started server PidClient={pidClient} PidServer={procServer.Id}");
-            await DoServerStuff(procServer, pidClient, async (oop) =>
+            await DoServerStuff(null, async (oop) =>
             {
                 await oop.ClientSendVerb(Verbs.CreateSharedMemSection, 65536U);
                 //                    await Task.Delay(5000);
@@ -356,30 +360,30 @@ IntPtr.Size = 8 Shared Memory region address
         }
 
 
-        private async Task DoServerStuff(Process procServer, int pidClient, Func<OutOfProc, Task> func)
+        private async Task DoServerStuff(OutOfProcOptions options, Func<OutOfProc, Task> func)
         {
             var sw = Stopwatch.StartNew();
             var cts = new CancellationTokenSource();
-
-            using (var oop = new OutOfProc(pidClient, cts.Token))
+            var didKill = false;
+            using (var oop = new OutOfProc(options, cts.Token))
             {
+                Trace.WriteLine($"Client: started server PidClient={oop.pidClient} PidServer={oop.ProcServer.Id}");
                 Trace.WriteLine($"Client: starting to connect");
                 await oop.ConnectAsync(cts.Token);
                 Trace.WriteLine($"Client: connected");
                 await func(oop);
                 await oop.ClientSendVerb(Verbs.ServerQuit, null);
-            }
-            var didKill = false;
-            while (!procServer.HasExited)
-            {
-                Trace.WriteLine($"Waiting for cons app to exit");
-                await Task.Delay(TimeSpan.FromMilliseconds(1000));
-                if (!Debugger.IsAttached && sw.Elapsed.TotalSeconds > 60 * 5)
+                while (!oop.ProcServer.HasExited)
                 {
-                    Trace.WriteLine($"Killing server process");
-                    procServer.Kill();
-                    didKill = true;
-                    break;
+                    Trace.WriteLine($"Waiting for cons app to exit");
+                    await Task.Delay(TimeSpan.FromMilliseconds(1000));
+                    if (!Debugger.IsAttached && sw.Elapsed.TotalSeconds > 30)
+                    {
+                        Trace.WriteLine($"Killing server process");
+                        oop.ProcServer.Kill();
+                        didKill = true;
+                        break;
+                    }
                 }
             }
             Trace.WriteLine($"Done in {sw.Elapsed.TotalSeconds:n2}");
@@ -391,24 +395,16 @@ IntPtr.Size = 8 Shared Memory region address
         public async Task OOPCreateDynamicServer()
         {
             var cts = new CancellationTokenSource();
-            var pidClient = Process.GetCurrentProcess().Id;
-            var doInProc = false; ; // for easier testing, do in proc
-            Process procServer = null;
-            if (!doInProc)
+            using (var oop = new OutOfProc(new OutOfProcOptions() { CreateServerOutOfProc = true }, cts.Token))
             {
-                procServer = OutOfProc.CreateServerProcess(pidClient);
-            }
-
-            using (var oop = new OutOfProc(pidClient, cts.Token))
-            {
-                Task taskServer;
-                if (doInProc)
+                Task taskServerDone;
+                if (!oop.Options.CreateServerOutOfProc)
                 {
-                    taskServer = oop.DoServerLoopAsync();
+                    taskServerDone = oop.DoServerLoopTask;
                 }
                 else
                 {
-                    taskServer = Task.Delay(100);
+                    taskServerDone = Task.Delay(100);
                 }
 
                 Trace.WriteLine("Starting Client");
@@ -417,14 +413,14 @@ IntPtr.Size = 8 Shared Memory region address
                     {
                         await oop.ConnectAsync(cts.Token);
 
-//                        await oop.ClientSendVerb(Verbs.DoMessageBox, $"Message From Client");
- 
+                        //                        await oop.ClientSendVerb(Verbs.DoMessageBox, $"Message From Client");
+
                         var str = await oop.ClientSendVerb(Verbs.verbRequestData, null);
                         Trace.WriteLine($"Req data {str}");
 
                         await oop.ClientSendVerb(Verbs.CreateSharedMemSection, 65536U);
 
-                        await oop.ClientSendVerb(Verbs.Delay, (byte)1);
+                        await oop.ClientSendVerb(Verbs.Delayms, (uint)1);
                         // speedtest
                         var sw = Stopwatch.StartNew();
 
@@ -455,15 +451,92 @@ IntPtr.Size = 8 Shared Memory region address
 
                 var nDelaySecs = Debugger.IsAttached ? 3000 : 20;
                 var tskDelay = Task.Delay(TimeSpan.FromSeconds(nDelaySecs));
-                await Task.WhenAny(new[] { tskDelay, taskServer });
+                await Task.WhenAny(new[] { tskDelay, taskServerDone });
                 if (tskDelay.IsCompleted)
                 {
                     Trace.WriteLine($"Delay {nDelaySecs} secs completed: cancelling server");
                     cts.Cancel();
                 }
-                await taskServer;
                 Trace.WriteLine($"Done");
-                Assert.IsTrue(taskServer.IsCompleted);
+                if (!oop.Options.CreateServerOutOfProc)
+                {
+                    await oop.DoServerLoopTask;
+                    Assert.IsTrue(oop.DoServerLoopTask.IsCompleted);
+                }
+            }
+        }
+        [TestMethod]
+        public async Task OOPReconnect()
+        {
+            var cts = new CancellationTokenSource();
+            using (var oop = new OutOfProc(new OutOfProcOptions() { CreateServerOutOfProc = true }, cts.Token))
+            {
+                Task taskServerDone;
+                if (!oop.Options.CreateServerOutOfProc)
+                {
+                    taskServerDone = oop.DoServerLoopTask;
+                }
+                else
+                {
+                    taskServerDone = Task.Delay(100);
+                }
+
+                Trace.WriteLine("Starting Client");
+                {
+                    try
+                    {
+                        await oop.ConnectAsync(cts.Token);
+
+                        //                        await oop.ClientSendVerb(Verbs.DoMessageBox, $"Message From Client");
+
+                        var str = await oop.ClientSendVerb(Verbs.verbRequestData, null);
+                        Trace.WriteLine($"Req data {str}");
+
+                        await oop.ClientSendVerb(Verbs.CreateSharedMemSection, 65536U);
+
+                        await oop.ClientSendVerb(Verbs.Delayms, (uint)1);
+                        // speedtest
+                        var sw = Stopwatch.StartNew();
+
+                        var nIter = 5U;
+                        uint bufSize = 1024 * 1024 * 1024;
+                        var bufSpeed = new byte[bufSize];
+                        for (int iter = 0; iter < nIter; iter++)
+                        {
+                            Trace.WriteLine($"Sending buf {bufSize:n0} Iter={iter}");
+                            await oop.ClientSendVerb(Verbs.DoSpeedTest, bufSpeed);
+                        }
+                        var bps = (double)bufSize * nIter / sw.Elapsed.TotalSeconds;
+                        Trace.WriteLine($"BytesPerSec = {bps:n0}"); // 1.4 G/Sec
+
+                        var strbig = await oop.ClientSendVerb(Verbs.GetStringSharedMem, 0);
+                        Trace.Write("Got big string " + strbig);
+
+                        Trace.WriteLine($"Server Logs: " + await oop.ClientSendVerb(Verbs.GetLog, null));
+                        Trace.WriteLine("Client: sending quit");
+                        await oop.ClientSendVerb(Verbs.ServerQuit, null);
+                    }
+                    catch (Exception ex)
+                    {
+                        Trace.WriteLine(ex.ToString());
+                        throw;
+                    }
+                }
+
+                var nDelaySecs = Debugger.IsAttached ? 3000 : 20;
+                var tskDelay = Task.Delay(TimeSpan.FromSeconds(nDelaySecs));
+                await Task.WhenAny(new[] { tskDelay, taskServerDone });
+                if (tskDelay.IsCompleted)
+                {
+                    Trace.WriteLine($"Delay {nDelaySecs} secs completed: cancelling server");
+                    cts.Cancel();
+                }
+                Trace.WriteLine($"Done");
+                if (!oop.Options.CreateServerOutOfProc)
+                {
+                    await oop.DoServerLoopTask;
+                    Assert.IsTrue(oop.DoServerLoopTask.IsCompleted);
+                }
             }
         }
     }

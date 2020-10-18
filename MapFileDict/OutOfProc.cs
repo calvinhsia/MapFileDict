@@ -26,7 +26,7 @@ namespace MapFileDict
                                   // dict containing every objid: for each is a list of parent objs (those that ref the original obj)
                                   // very useful for finding: e.g. who holds a reference to FOO
         QueryParentOfObject, // given an obj, get a list of objs that reference it
-        Delay,
+        Delayms,
     }
     public class OutOfProc : OutOfProcBase
     {
@@ -35,11 +35,13 @@ namespace MapFileDict
         public OutOfProc()
         {
             AddVerbs();
+            tcsAddedVerbs.SetResult(0);
         }
 
-        public OutOfProc(int pidClient, CancellationToken token) : base(pidClient, token)
+        public OutOfProc(OutOfProcOptions options, CancellationToken token) : base(options, token)
         {
             AddVerbs();
+            tcsAddedVerbs.SetResult(0);
         }
         /// <summary>
         /// The verbs are added to the Verbs enum and each has a two part implementation: one part that runs in the client code
@@ -159,22 +161,22 @@ namespace MapFileDict
                     return null;
                 });
 
-            AddVerb(Verbs.Delay,
+            AddVerb(Verbs.Delayms,
                 actClientSendVerb: async (arg) =>
                 {
-                    await PipeFromClient.WriteVerbAsync(Verbs.Delay);
-                    byte delaysecs = (byte)arg;
+                    await PipeFromClient.WriteVerbAsync(Verbs.Delayms);
+                    uint delaysecs = (uint)arg;
                     Trace.WriteLine($"Client requesting delay of {delaysecs}");
-                    PipeFromClient.WriteByte(delaysecs); // # secs
+                    PipeFromClient.WriteUInt32(delaysecs); // # secs
                     await PipeFromClient.ReadAcknowledgeAsync();
                     return null;
                 },
                 actServerDoVerb: async (arg) =>
                 {
                     await PipeFromServer.WriteAcknowledgeAsync();
-                    var delaysecs = PipeFromServer.ReadByte();
-                    Trace.WriteLine($"Server got request to delay {delaysecs}");
-                    await Task.Delay(TimeSpan.FromSeconds(delaysecs));
+                    var delaymsecs = PipeFromServer.ReadUInt32();
+                    Trace.WriteLine($"Server got request to delay {delaymsecs}");
+                    await Task.Delay(TimeSpan.FromMilliseconds(delaymsecs));
                     await PipeFromServer.WriteAcknowledgeAsync();
                     return null;
                 });
@@ -328,8 +330,6 @@ namespace MapFileDict
                 });
 
         }
-        [DllImport("user32")]
-        public static extern int MessageBox(int hWnd, String text, String caption, uint type);
         /// <summary>
         /// This runs on the client to send the data in chunks to the server. The object graph is multi million objects
         /// so we don't want to create them all in a data structure to send, but enumerate them and send in chunks
