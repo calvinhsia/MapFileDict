@@ -27,6 +27,8 @@ namespace MapFileDict
         public PortableExecutableKinds portableExecutableKinds = PortableExecutableKinds.PE32Plus;
         public ImageFileMachine imageFileMachine = ImageFileMachine.AMD64;
         public string AdditionalAssemblyPaths = string.Empty;
+        public int TimeoutSecsPipeOp = 4;
+        public bool ServerTraceLogging = true;
 
         public int PidClient;
 
@@ -43,6 +45,7 @@ namespace MapFileDict
         MemoryMappedViewAccessor _MemoryMappedFileViewForSharedRegion;
         public IntPtr _MemoryMappedRegionAddress;// the address of the shared region. Will probably be different for client and for server
         public int pidClient => Options.PidClient;
+        public int TimeoutSecsPipeOp => Options.TimeoutSecsPipeOp;
         protected MyTraceListener mylistener;
         public Process ProcServer { get; set; } // only if out of proc
         public Task DoServerLoopTask; // the loop that listens for the pipe and executes verbs
@@ -160,7 +163,7 @@ namespace MapFileDict
             var execContext = CreateExecutionContext(tcsStaThread);
             await execContext.Dispatcher.InvokeAsync(async () =>
             {
-//                MessageBox(0, $"Attach a debugger if desired {Process.GetCurrentProcess().Id} {Process.GetCurrentProcess().MainModule.FileName}", "Server Process", 0);
+                //                MessageBox(0, $"Attach a debugger if desired {Process.GetCurrentProcess().Id} {Process.GetCurrentProcess().MainModule.FileName}", "Server Process", 0);
                 var cts = new CancellationTokenSource();
                 OutOfProcBase oop = null;
                 try
@@ -201,7 +204,7 @@ namespace MapFileDict
                     pipeName: pipeName,
                     direction: PipeDirection.InOut,
                     maxNumberOfServerInstances: 1,
-                    transmissionMode: PipeTransmissionMode.Byte,
+                    transmissionMode: PipeTransmissionMode.Message,
                     options: PipeOptions.Asynchronous
                     );
                 {
@@ -221,7 +224,7 @@ namespace MapFileDict
                                     Trace.WriteLine("server: got cancel");
                                     receivedQuit = true;
                                 }
-                                var verb = (Verbs)PipeFromServer.ReadByte();
+                                var verb = await PipeFromServer.ReadVerbAsync();
                                 if (_dictVerbs.ContainsKey(verb))
                                 {
                                     var res = await ServerDoVerb(verb, null);
@@ -362,7 +365,7 @@ namespace MapFileDict
                 Trace.WriteLine($"MyStaThread before Dispatcher.run");
                 Dispatcher.Run();
                 Trace.WriteLine($"MyStaThread After Dispatcher.run");
-//                tcsStaThread.SetResult(0);
+                //                tcsStaThread.SetResult(0);
             })
             {
 
@@ -383,10 +386,9 @@ namespace MapFileDict
     }
     public class MyTraceListener : TextWriterTraceListener
     {
-        public List<string> lstLoggedStrings;
+        public List<string> lstLoggedStrings = new List<string>();
         public MyTraceListener()
         {
-            lstLoggedStrings = new List<string>();
         }
         public override void WriteLine(string str)
         {
@@ -394,6 +396,10 @@ namespace MapFileDict
                  DateTime.Now.ToString("hh:mm:ss:fff")
                  ) + $"{Thread.CurrentThread.ManagedThreadId,2} ";
             lstLoggedStrings.Add(dt + str);
+            if (Debugger.IsAttached)
+            {
+                Debug.WriteLine(dt + str);
+            }
         }
 
         protected override void Dispose(bool disposing)
@@ -442,44 +448,102 @@ namespace MapFileDict
 
     public static class ExtensionMethods
     {
+        static void PipeMsgTraceWriteline(string str)
+        {
+//            Trace.WriteLine(str);
+        }
+        public static int TimeoutSecs = 30;
+        public async static Task<byte[]> ReadTimeout(this PipeStream pipe, int count)
+        {
+            PipeMsgTraceWriteline($"  {pipe.GetType().Name} ReadTimeout count={count}");
+            var buff = new byte[count];
+            var taskRead = Task<int>.Factory.FromAsync(pipe.BeginRead, pipe.EndRead, buff, 0, 1, null, TaskCreationOptions.None);
+            var taskTimeout = Task.Delay(TimeSpan.FromSeconds(TimeoutSecs));
+
+            await Task.WhenAny(new Task[] { taskTimeout, taskRead });
+            if (!taskRead.IsCompleted)
+            {
+                PipeMsgTraceWriteline($"   {pipe.GetType().Name} TaskRead not complete Count ={count}");
+                throw new InvalidOperationException("Pipe read timeout");
+            }
+            PipeMsgTraceWriteline($"    {pipe.GetType().Name} ReadTimeout done count={count}");
+            return buff;
+        }
+
+        public async static Task WriteTimeout(this PipeStream pipe, byte[] buff, int count)
+        {
+            PipeMsgTraceWriteline($"  {pipe.GetType().Name} writetimeout Count={count}");
+            //            pipe.BeginWrite(buff, offset: 0, count: count,null,null)
+            var taskWrite = Task.Factory.FromAsync(pipe.BeginWrite, pipe.EndWrite, buff, 0, count, null, TaskCreationOptions.None);
+            var taskTimeout = Task.Delay(TimeSpan.FromSeconds(TimeoutSecs));
+
+            await Task.WhenAny(new Task[] { taskTimeout, taskWrite });
+            if (!taskWrite.IsCompleted)
+            {
+                PipeMsgTraceWriteline($"   {pipe.GetType().Name} TaskWrite not complete Count ={count}");
+                throw new InvalidOperationException("Pipe write timeout");
+            }
+            PipeMsgTraceWriteline($"    {pipe.GetType().Name} writetimeout done Count={count}");
+        }
         public static async Task WriteAcknowledgeAsync(this PipeStream pipe)
         {
-            var verb = new byte[2];
-            verb[0] = (byte)Verbs.Acknowledge;
-            await pipe.WriteAsync(verb, 0, 1);
+            PipeMsgTraceWriteline($"{pipe.GetType().Name} WriteAck");
+            var buff = new byte[1] { (byte)Verbs.Acknowledge };
+            await pipe.WriteTimeout(buff, 1);
         }
         public static async Task ReadAcknowledgeAsync(this PipeStream pipe)
         {
-            var buff = new byte[10];
-            var len = await pipe.ReadAsync(buff, 0, 1);
-            if (len != 1 || buff[0] != (byte)Verbs.Acknowledge)
+            PipeMsgTraceWriteline($"{pipe.GetType().Name} ReadAck");
+            var buff = await pipe.ReadTimeout(count: 1);
+            if (buff[0] != (byte)Verbs.Acknowledge)
             {
                 Trace.Write($"Didn't get Expected Ack");
             }
+        }
+        public static async Task<Verbs> ReadVerbAsync(this PipeStream pipe)
+        {
+            var buff = await ReadTimeout(pipe, 1);
+            return (Verbs)buff[0];
         }
         /// <summary>
         /// Sends verb and waits for ack
         /// </summary>
         public static async Task WriteVerbAsync(this PipeStream pipe, Verbs verb)
         {
-            pipe.WriteByte((byte)verb);
-            await pipe.ReadAcknowledgeAsync();
+            PipeMsgTraceWriteline($"Client Send verb{verb}");
+            var buff = new byte[1] { (byte)verb };
+            await pipe.WriteTimeout(buff, 1).ContinueWith(async t =>
+            {
+                await pipe.ReadAcknowledgeAsync();
+            });
         }
-        public static void WriteUInt32(this PipeStream pipe, uint addr)
+        public static async Task WriteUInt32(this PipeStream pipe, uint addr)
+        {
+            PipeMsgTraceWriteline($"{pipe.GetType().Name} WriteUInt32 val={addr}");
+            var buf = BitConverter.GetBytes(addr);
+            /*
+            pipe.Write(buf, 0, buf.Length);
+            await Task.Yield();
+            /*/
+            await pipe.WriteTimeout(buf, buf.Length);
+             //*/
+        }
+        public static async Task WriteUInt64(this PipeStream pipe, UInt64 addr)
         {
             var buf = BitConverter.GetBytes(addr);
-            pipe.Write(buf, 0, buf.Length);
+            await pipe.WriteTimeout(buf, buf.Length);
         }
-        public static void WriteUInt64(this PipeStream pipe, UInt64 addr)
+        public static async Task<uint> ReadUInt32(this PipeStream pipe)
         {
-            var buf = BitConverter.GetBytes(addr);
-            pipe.Write(buf, 0, buf.Length);
-        }
-        public static uint ReadUInt32(this PipeStream pipe)
-        {
-            var buf = new byte[4];
-            pipe.Read(buf, 0, buf.Length);
-            var res = BitConverter.ToUInt32(buf, 0);
+            PipeMsgTraceWriteline($"{pipe.GetType().Name} {nameof(ReadUInt32)}");
+            ///*
+            var buff = new byte[4];
+            pipe.Read(buff, 0, 4);
+            await Task.Yield();
+            /*/
+            var buff = await pipe.ReadTimeout(4);
+            //*/
+            var res = BitConverter.ToUInt32(buff, 0);
             return res;
         }
         public static ulong ReadUInt64(this PipeStream pipe)
@@ -491,13 +555,17 @@ namespace MapFileDict
         }
         public static async Task WriteStringAsAsciiAsync(this PipeStream pipe, string str)
         {
-            pipe.WriteUInt32((uint)str.Length);
+            PipeMsgTraceWriteline($"{nameof(WriteStringAsAsciiAsync)} Write len {str.Length}");
+            await pipe.WriteUInt32((uint)str.Length);
             var byts = Encoding.ASCII.GetBytes(str);
+            PipeMsgTraceWriteline($"{nameof(WriteStringAsAsciiAsync)} Write bytes {byts.Length}");
             await pipe.WriteAsync(byts, 0, byts.Length);
         }
         public static async Task<string> ReadStringAsAsciiAsync(this PipeStream pipe)
         {
-            var strlen = pipe.ReadUInt32();
+            PipeMsgTraceWriteline($"{nameof(ReadStringAsAsciiAsync)} Read len");
+            var strlen = await pipe.ReadUInt32();
+            PipeMsgTraceWriteline($"{nameof(ReadStringAsAsciiAsync)} Got len = {strlen}");
             var bytes = new byte[strlen];
             await pipe.ReadAsync(bytes, 0, (int)strlen);
             var str = Encoding.ASCII.GetString(bytes);

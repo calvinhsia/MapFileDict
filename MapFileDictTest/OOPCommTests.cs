@@ -395,7 +395,12 @@ IntPtr.Size = 8 Shared Memory region address
         public async Task OOPCreateDynamicServer()
         {
             var cts = new CancellationTokenSource();
-            using (var oop = new OutOfProc(new OutOfProcOptions() { CreateServerOutOfProc = true }, cts.Token))
+            using (var oop = new OutOfProc(
+                new OutOfProcOptions()
+                {
+                    CreateServerOutOfProc = false
+                },
+                cts.Token))
             {
                 Task taskServerDone;
                 if (!oop.Options.CreateServerOutOfProc)
@@ -414,7 +419,11 @@ IntPtr.Size = 8 Shared Memory region address
                         await oop.ConnectAsync(cts.Token);
 
                         //                        await oop.ClientSendVerb(Verbs.DoMessageBox, $"Message From Client");
+                        await oop.ClientSendVerb(Verbs.Delayms, (uint)2);
 
+                        //Trace.WriteLine("Client: sending quit");
+                        //await oop.ClientSendVerb(Verbs.ServerQuit, null);
+                        //return;
                         var str = await oop.ClientSendVerb(Verbs.verbRequestData, null);
                         Trace.WriteLine($"Req data {str}");
 
@@ -435,8 +444,8 @@ IntPtr.Size = 8 Shared Memory region address
                         var bps = (double)bufSize * nIter / sw.Elapsed.TotalSeconds;
                         Trace.WriteLine($"BytesPerSec = {bps:n0}"); // 1.4 G/Sec
 
-                        var strbig = await oop.ClientSendVerb(Verbs.GetStringSharedMem, 0);
-                        Trace.Write("Got big string " + strbig);
+                        var strbig = (string)await oop.ClientSendVerb(Verbs.GetStringSharedMem, 0);
+                        Trace.Write($"Got big string Len = {strbig.Length} " + strbig);
 
                         Trace.WriteLine($"Server Logs: " + await oop.ClientSendVerb(Verbs.GetLog, null));
                         Trace.WriteLine("Client: sending quit");
