@@ -322,7 +322,7 @@ namespace MapFileDict
                     if (dictInverted.TryGetValue(objQuery, out var lstParents))
                     {
                         var numParents = lstParents?.Count;
-                        Trace.WriteLine($"Server: {objQuery:x8}  NumParents={numParents}");
+//                        Trace.WriteLine($"Server: {objQuery:x8}  NumParents={numParents}");
                         if (numParents > 0)
                         {
                             foreach (var parent in lstParents)

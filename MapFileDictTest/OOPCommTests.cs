@@ -20,8 +20,21 @@ namespace MapFileDictTest
     {
         string fnameObjectGraph = @"c:\users\calvinh\Desktop\ObjGraph.txt"; // 2.1Megs from "VSDbgData\VSDbgTestDumps\MSSln22611\MSSln22611.dmp
         uint WpfTextView = 0x362b72e0;
-        uint TextBuffer = 0x3629712c;
+        uint MemoryMappedViewAccessor = 0x120cd2dc; //120cd2dc  System.IO.MemoryMappedFiles.MemoryMappedViewAccessor
         uint SystemStackOverflowException = 0x034610b4;// System.StackOverflowException
+        uint ShortSimpleTextStorage = 0x36197924; // many parents in parent chain
+        /*
+Children of "-> builder = Microsoft.VisualStudio.Text.Implementation.BinaryStringRebuilder 0x36297110"
+-> builder = Microsoft.VisualStudio.Text.Implementation.BinaryStringRebuilder 0x36297110
+ -> _left = Microsoft.VisualStudio.Text.Implementation.BinaryStringRebuilder 0x3625bfb4
+  -> _left = Microsoft.VisualStudio.Text.Implementation.BinaryStringRebuilder 0x362126f0
+   -> _left = Microsoft.VisualStudio.Text.Implementation.BinaryStringRebuilder 0x361e1484
+    -> _left = Microsoft.VisualStudio.Text.Implementation.BinaryStringRebuilder 0x361b8968
+     -> _left = Microsoft.VisualStudio.Text.Implementation.BinaryStringRebuilder 0x3619ff20
+      -> _left = Microsoft.VisualStudio.Text.Implementation.SimpleStringRebuilder 0x36197bf4
+       -> _storage = Microsoft.VisualStudio.Text.Implementation.ShortSimpleTextStorage 0x36197924
+        -> _content = System.String 0x3618f914 Imports System.IO
+         */
 
         [TestMethod]
         public async Task OOPGetObjectGraph()
@@ -43,8 +56,8 @@ namespace MapFileDictTest
                     Trace.WriteLine($"   {itm:x8}");
                 }
             }
-            ShowParents(WpfTextView, "WpfTextView");
-            ShowParents(TextBuffer, "TextBuffer");
+            ShowParents(MemoryMappedViewAccessor, nameof(MemoryMappedViewAccessor));
+            ShowParents(WpfTextView, nameof(WpfTextView));
             VerifyLogStrings(@"
 Parents of WpfTextView   362b72e0
 03b17f7c
@@ -61,7 +74,7 @@ Parents of WpfTextView   362b72e0
         {
             using (var fs = new StreamReader(fnameObjectGraph))
             {
-                List<uint> lstChildren = null;
+                var hashset = new HashSet<uint>(); // EnumerateObjectReferences sometimes has duplicate children <sigh>
                 var curObjId = 0U;
                 while (!fs.EndOfStream)
                 {
@@ -72,21 +85,17 @@ Parents of WpfTextView   362b72e0
                     {
                         if (curObjId != 0)
                         {
-                            yield return Tuple.Create<uint, List<uint>>(curObjId, lstChildren);
+                            yield return Tuple.Create<uint, List<uint>>(curObjId, hashset.ToList());
                         }
-                        lstChildren = null;
+                        hashset = new HashSet<uint>();
                         curObjId = oidTemp;
                     }
                     else
                     {
-                        if (lstChildren == null)
-                        {
-                            lstChildren = new List<uint>();
-                        }
-                        lstChildren.Add(oidTemp);
+                        hashset.Add(oidTemp);
                     }
                 }
-                yield return Tuple.Create<uint, List<uint>>(curObjId, lstChildren);
+                yield return Tuple.Create<uint, List<uint>>(curObjId, hashset.ToList());
             }
         }
 
@@ -112,6 +121,27 @@ Parents of WpfTextView   362b72e0
                             }
                             File.AppendAllText(@"c:\users\calvinh\Desktop\objgraph.txt", sb.ToString());
                         }
+Children of "<- System.IO.MemoryMappedFiles.MemoryMappedViewAccessor  120cd2dc"
+<- System.IO.MemoryMappedFiles.MemoryMappedViewAccessor  120cd2dc
+ <- Microsoft.CodeAnalysis.Host.TemporaryStorageServiceFactory+MemoryMappedInfo accessor 120cd280
+  <- Microsoft.CodeAnalysis.Host.TemporaryStorageServiceFactory+TemporaryStorageService+TemporaryStreamStorage memoryMappedInfo 120cd270
+   <- Microsoft.CodeAnalysis.Host.ITemporaryStreamStorage[]  120cd430
+    <- System.Collections.Generic.List<Microsoft.CodeAnalysis.Host.ITemporaryStreamStorage> _items 12073ea0
+     <- Microsoft.VisualStudio.LanguageServices.Implementation.ProjectSystem.VisualStudioMetadataReferenceManager+RecoverableMetadataValueSource storages 120cdbac
+      <- System.Collections.Generic.Dictionary+Entry<Roslyn.Utilities.FileKey,Roslyn.Utilities.ValueSource<Microsoft.CodeAnalysis.AssemblyMetadata>>[]  125b4538
+  <- Microsoft.CodeAnalysis.Host.TemporaryStorageServiceFactory+MemoryMappedInfo+SharedReadableStream owner 120cd33c
+   <- Microsoft.CodeAnalysis.ModuleMetadata  120cd364
+    <- Microsoft.CodeAnalysis.ModuleMetadata[]  120cdb6c
+     <- Microsoft.CodeAnalysis.AssemblyMetadata lazyPublishedModules 120cdb7c
+     <- Microsoft.CodeAnalysis.AssemblyMetadata lazyPublishedModules 120cdb7c
+     <- Microsoft.CodeAnalysis.AssemblyMetadata+Data Modules 120cde88
+ <- Microsoft.CodeAnalysis.Host.TemporaryStorageServiceFactory+MemoryMappedInfo+SharedReadableStream accessor 120cd33c
+  <- Microsoft.CodeAnalysis.ModuleMetadata  120cd364
+   <- Microsoft.CodeAnalysis.ModuleMetadata[]  120cdb6c
+    <- Microsoft.CodeAnalysis.AssemblyMetadata lazyPublishedModules 120cdb7c
+    <- Microsoft.CodeAnalysis.AssemblyMetadata lazyPublishedModules 120cdb7c
+    <- Microsoft.CodeAnalysis.AssemblyMetadata+Data Modules 120cde88
+
 
             12075104 Microsoft.Build.Construction.XmlAttributeWithLocation
                120750d4  Microsoft.Build.Construction.XmlElementWithLocation
@@ -162,6 +192,7 @@ Parents of WpfTextView   362b72e0
             var dictOGraph = new Dictionary<uint, List<uint>>();
             int nObjsWithAtLeastOneKid = 0;
             int nChildObjs = 0;
+            var hashset = new HashSet<uint>(); // EnumerateObjectReferences sometimes has duplicate children <sigh>
             using (var fs = new StreamReader(fnameObjectGraph))
             {
                 List<uint> lstChildren = null;
@@ -173,6 +204,26 @@ Parents of WpfTextView   362b72e0
                     var oidTemp = uint.Parse(lineParts[0].Trim(), System.Globalization.NumberStyles.AllowHexSpecifier);
                     if (!line.StartsWith(" "))
                     {
+                        hashset = new HashSet<uint>(); // perf: much faster to create a new one than to use the old one (which might have expanded capacity and really slows down 15secs to 33 min
+                        /*
+                        Name                                                                                                                                                                                                	Inc %	     Inc	Exc %	   Exc
+                         | |                  + system.core!PipeStream.AsyncPSCallback                                                                                                                                      	 49.3	   4,175	  0.0	     4
+                         | |                   + mscorlib!System.Threading.Tasks.TaskFactory`1+<>c__DisplayClass44_0`3[System.Int32,System.__Canon,System.Int32,System.Int32].<FromAsyncImpl>b__0(class System.IAsyncResult)	 49.2	   4,167	  0.0	     0
+                         | |                   |+ mscorlib.ni!?                                                                                                                                                             	 49.2	   4,167	  0.0	     0
+                         | |                   | + mapfiledict!MapFileDict.ExtensionMethods+<ReadTimeout>d__2.MoveNext()                                                                                                    	 49.2	   4,167	  0.0	     0
+                         | |                   |  + mscorlib.ni!?                                                                                                                                                           	 49.2	   4,167	  0.0	     0
+                         | |                   |   + mapfiledict!MapFileDict.ExtensionMethods+<ReadAcknowledgeAsync>d__5.MoveNext()                                                                                         	 49.2	   4,167	  0.0	     0
+                         | |                   |    + mscorlib.ni!?                                                                                                                                                         	 49.2	   4,167	  0.0	     0
+                         | |                   |     + mapfiledict!MapFileDict.OutOfProc+<<AddVerbs>b__4_18>d.MoveNext()                                                                                                    	 49.2	   4,167	  0.0	     0
+                         | |                   |      + mscorlib.ni!?                                                                                                                                                       	 49.2	   4,167	  0.0	     0
+                         | |                   |       + mapfiledict!MapFileDict.OutOfProc+<>c__DisplayClass5_0+<<SendObjGraphEnumerableInChunksAsync>g__SendBufferAsync|0>d.MoveNext()                                     	 49.2	   4,167	  0.0	     0
+                         | |                   |        + mscorlib.ni!?                                                                                                                                                     	 49.2	   4,167	  0.1	     5
+                         | |                   |         + mapfiledict!MapFileDict.OutOfProc+<SendObjGraphEnumerableInChunksAsync>d__5.MoveNext()                                                                           	 49.1	   4,161	  0.2	    21
+                         | |                   |         |+ mapfiledicttest!MapFileDictTest.OOPCommTests+<GetObjectGraphIEnumerable>d__5.MoveNext()                                                                         	 48.2	   4,078	  0.2	    13
+                         | |                   |         ||+ system.core!System.Collections.Generic.HashSet`1[System.UInt32].Clear()                                                                                        	 46.4	   3,925	  0.1	     5
+                         | |                   |         |||+ clr!ArrayNative::ArrayClear                                                                                                                                   	 46.3	   3,920	  0.0	     0
+                         | |                   |         ||| + clr!ZeroMemoryInGCHeap                                                                                                                                       	 46.3	   3,920	 45.9	 3,889
+                         */
                         lstChildren = null;
                         dictOGraph[oidTemp] = lstChildren;
                         curObjId = oidTemp;
@@ -185,8 +236,12 @@ Parents of WpfTextView   362b72e0
                             lstChildren = new List<uint>();
                             dictOGraph[curObjId] = lstChildren;
                         }
-                        nChildObjs++;
-                        lstChildren.Add(oidTemp);
+                        if (!hashset.Contains(oidTemp))
+                        {
+                            hashset.Add(oidTemp);
+                            nChildObjs++;
+                            lstChildren.Add(oidTemp);
+                        }
                     }
                 }
             }
@@ -214,8 +269,8 @@ Parents of WpfTextView   362b72e0
 
                      await oop.ClientSendVerb(Verbs.CreateSharedMemSection, 65536U);
 
-                     await DoShowResultsFromQueryForParents(oop, SystemStackOverflowException, nameof(SystemStackOverflowException));
-                     await DoShowResultsFromQueryForParents(oop, WpfTextView, nameof(WpfTextView));
+                     await DoQueryForParents(oop, SystemStackOverflowException, nameof(SystemStackOverflowException));
+                     await DoQueryForParents(oop, MemoryMappedViewAccessor, nameof(MemoryMappedViewAccessor));
 
                      Trace.WriteLine($"Server Logs: " + await oop.ClientSendVerb(Verbs.GetLog, null));
                  });
@@ -228,8 +283,8 @@ Parents of WpfTextView   362b72e0
             VerifyLogStrings(@"
 IntPtr.Size = 8 Shared Memory region
 # dict entries = 1223023
-SystemStackOverflowException 362b72e0  has 0 parents
-WpfTextView 362b72e0  has 221 parents
+034610b4 SystemStackOverflowException has 0 parents
+120cd2dc MemoryMappedViewAccessor has 2 parents
 ");
         }
 
@@ -261,9 +316,11 @@ WpfTextView 362b72e0  has 221 parents
                         await oop.ClientSendVerb(Verbs.CreateInvertedDictionary, null);
                         Trace.WriteLine($"Inverted Dictionary");
 
-                        await DoShowResultsFromQueryForParents(oop, SystemStackOverflowException, nameof(SystemStackOverflowException));
+                        await DoQueryForParents(oop, SystemStackOverflowException, nameof(SystemStackOverflowException));
 
-                        await DoShowResultsFromQueryForParents(oop, WpfTextView, nameof(WpfTextView));
+                        await DoQueryForParents(oop, ShortSimpleTextStorage, nameof(ShortSimpleTextStorage));
+
+                        await DoQueryForParents(oop, MemoryMappedViewAccessor, nameof(MemoryMappedViewAccessor));
                         Trace.WriteLine("Client: sending quit");
                         await oop.ClientSendVerb(Verbs.ServerQuit, null);
                     }
@@ -287,28 +344,65 @@ WpfTextView 362b72e0  has 221 parents
                 Assert.IsTrue(taskServer.IsCompleted);
             }
             VerifyLogStrings(@"
-362b72e0  NumParents=221
+Inverted Dictionary
+ 034610b4 SystemStackOverflowException has 0 parents
+   034610b4
+ 36197924 ShortSimpleTextStorage has 1 parents
+   36297110
+     3625bfb4
+       362126f0
+         361e1484
+           361b8968
+             3619ff20
+               36197bf4
+                 36197924
+ 120cd2dc MemoryMappedViewAccessor has 2 parents
+   120cd2dc
 # dict entries = 1223023
 ");
         }
-        private async Task DoShowResultsFromQueryForParents(OutOfProc oop, uint objId, string desc)
+        private async Task<List<uint>> DoQueryForParents(OutOfProc oop, uint objIdLeaf, string desc)
         {
-            var lstParents = await QueryServerForParents(oop, objId);
-            Trace.WriteLine($"{desc} {WpfTextView:x8}  has {lstParents.Count} parents");
-
-            foreach (var parent in lstParents.Take(20))
+            int nMaxLevels = 20;
+            int numImmediateParents = 0;
+            var lstParentChain = new List<uint>();
+            lstParentChain.Add(objIdLeaf);
+            //            Trace.WriteLine($"Looking for Parents of {desc} {objIdLeaf:x8}");
+            await WalkParentTreeAsync(objIdLeaf, 0);
+            lstParentChain.Reverse();
+            int nIndex = 0;
+            foreach (var itm in lstParentChain)
             {
-                Trace.WriteLine($"A Parent of {desc} {objId:x8} is {parent:x8}");
+                var indent = new string(' ', 2 * nIndex++);
+                Trace.WriteLine($"  {indent} {itm:x8}");
+            }
+            return lstParentChain;
+            // we want to walk from leaf node up the parent chain while the parent count ==1.
+            // then we want the ref chain list in reverse, from root to leaf
+            async Task WalkParentTreeAsync(uint objId, int level)
+            {
+                if (level < nMaxLevels)
+                {
+                    var indent = new string(' ', 2 * level);
+                    var lstParents = (List<uint>)await oop.ClientSendVerb(Verbs.QueryParentOfObject, objId);
+                    if (level == 0)
+                    {
+                        numImmediateParents = lstParents.Count;
+                        Trace.WriteLine($"{indent} {objId:x8} {desc} has {lstParents.Count} parents");
+                    }
+                    if (lstParents.Count == 1)
+                    {
+                        lstParentChain.Add(lstParents[0]);
+                        foreach (var parentObjId in lstParents.Take(10))
+                        {
+//                            Trace.WriteLine($"{indent}  {parentObjId:x8}");
+                            await WalkParentTreeAsync(parentObjId, level + 1);
+                        }
+                    }
+                }
             }
         }
 
-        private async Task<List<uint>> QueryServerForParents(OutOfProc oop, uint objId)
-        {
-            Trace.WriteLine($"Query Parent {objId:x8}");
-
-            var lstParents = (List<uint>)await oop.ClientSendVerb(Verbs.QueryParentOfObject, objId);
-            return lstParents;
-        }
 
         [TestMethod]
         public async Task OOPTestConsoleApp()
@@ -364,30 +458,29 @@ IntPtr.Size = 8 Shared Memory region address
         {
             var sw = Stopwatch.StartNew();
             var cts = new CancellationTokenSource();
-            var didKill = false;
+            var serverPid = 0;
             using (var oop = new OutOfProc(options, cts.Token))
             {
+                serverPid = oop.ProcServer.Id;
                 Trace.WriteLine($"Client: started server PidClient={oop.pidClient} PidServer={oop.ProcServer.Id}");
                 Trace.WriteLine($"Client: starting to connect");
                 await oop.ConnectAsync(cts.Token);
                 Trace.WriteLine($"Client: connected");
                 await func(oop);
                 await oop.ClientSendVerb(Verbs.ServerQuit, null);
-                while (!oop.ProcServer.HasExited)
-                {
-                    Trace.WriteLine($"Waiting for cons app to exit");
-                    await Task.Delay(TimeSpan.FromMilliseconds(1000));
-                    if (!Debugger.IsAttached && sw.Elapsed.TotalSeconds > 30)
-                    {
-                        Trace.WriteLine($"Killing server process");
-                        oop.ProcServer.Kill();
-                        didKill = true;
-                        break;
-                    }
-                }
             }
             Trace.WriteLine($"Done in {sw.Elapsed.TotalSeconds:n2}");
-            Assert.IsFalse(didKill, "Had to kill server");
+            var serverDidExit = false;
+            try
+            {
+                var procsleft = Process.GetProcessById(serverPid);
+
+            }
+            catch (Exception)
+            {
+                serverDidExit = true;
+            }
+            Assert.IsTrue(serverDidExit, "serverDidExit");
         }
 
 

@@ -37,7 +37,7 @@ namespace MapFileDict
     {
         private CancellationToken token;
         public OutOfProcOptions Options;
-        private string pipeName;
+        private readonly string pipeName;
 
         public uint _sharedMapSize;
         protected string _sharedFileMapName;
@@ -224,7 +224,7 @@ namespace MapFileDict
                                     Trace.WriteLine("server: got cancel");
                                     receivedQuit = true;
                                 }
-                                var verb = await PipeFromServer.ReadVerbAsync();
+                                var verb = (Verbs)PipeFromServer.ReadByte(); // when reading verb, we don't want timeout because client initiated calls can occur any time
                                 if (_dictVerbs.ContainsKey(verb))
                                 {
                                     var res = await ServerDoVerb(verb, null);
@@ -324,6 +324,22 @@ namespace MapFileDict
 
         public void Dispose()
         {
+            if (ProcServer != null)
+            {
+                int nRetries = 0;
+                while (!ProcServer.HasExited)
+                {
+                    Trace.WriteLine($"Waiting for server to exit Pid={ProcServer.Id}");
+                    Thread.Sleep(TimeSpan.FromSeconds(1));
+                    if (!Debugger.IsAttached && nRetries > 5)
+                    {
+                        Trace.WriteLine($"Killing server process");
+                        ProcServer.Kill();
+                        break;
+                    }
+                }
+            }
+
             foreach (var kvp in dictProperties)
             {
                 if (kvp.Value is IDisposable oDisp)
@@ -450,7 +466,7 @@ namespace MapFileDict
     {
         static void PipeMsgTraceWriteline(string str)
         {
-//            Trace.WriteLine(str);
+            //            Trace.WriteLine(str);
         }
         public static int TimeoutSecs = 30;
         public async static Task<byte[]> ReadTimeout(this PipeStream pipe, int count)
@@ -526,7 +542,7 @@ namespace MapFileDict
             await Task.Yield();
             /*/
             await pipe.WriteTimeout(buf, buf.Length);
-             //*/
+            //*/
         }
         public static async Task WriteUInt64(this PipeStream pipe, UInt64 addr)
         {
