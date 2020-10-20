@@ -301,7 +301,7 @@ IntPtr.Size = 8 Shared Memory region
                 {
                     try
                     {
-                        await oop.ConnectAsync(cts.Token);
+                        await oop.ConnectToServerAsync(cts.Token);
 
                         await oop.ClientSendVerb(Verbs.CreateSharedMemSection, 65536U);
 
@@ -464,7 +464,7 @@ IntPtr.Size = 8 Shared Memory region address
                 serverPid = oop.ProcServer.Id;
                 Trace.WriteLine($"Client: started server PidClient={oop.pidClient} PidServer={oop.ProcServer.Id}");
                 Trace.WriteLine($"Client: starting to connect");
-                await oop.ConnectAsync(cts.Token);
+                await oop.ConnectToServerAsync(cts.Token);
                 Trace.WriteLine($"Client: connected");
                 await func(oop);
                 await oop.ClientSendVerb(Verbs.ServerQuit, null);
@@ -509,7 +509,7 @@ IntPtr.Size = 8 Shared Memory region address
                 {
                     try
                     {
-                        await oop.ConnectAsync(cts.Token);
+                        await oop.ConnectToServerAsync(cts.Token);
 
                         //                        await oop.ClientSendVerb(Verbs.DoMessageBox, $"Message From Client");
                         await oop.ClientSendVerb(Verbs.Delayms, (uint)2);

@@ -11,6 +11,8 @@ namespace MapFileDict
 {
     public enum Verbs
     {
+        EstablishConnection, // Handshake the version of the connection
+        GetLastError, // get the last error from the server. Will be reset to ""
         ServerQuit, // Quit the server process. Sends an Ack, so must wait for ack before done
         Acknowledge, // acknowledge receipt of verb
         CreateSharedMemSection, // create a region of memory that can be shared between the client/server
@@ -30,6 +32,8 @@ namespace MapFileDict
     }
     public class OutOfProc : OutOfProcBase
     {
+        public uint ConnectionVersion = 1;
+        public string LastError = string.Empty;
         Dictionary<uint, List<uint>> dictObjRef = new Dictionary<uint, List<uint>>();
         Dictionary<uint, List<uint>> dictInverted = null;
         public OutOfProc()
@@ -43,6 +47,18 @@ namespace MapFileDict
             AddVerbs();
             tcsAddedVerbs.SetResult(0);
         }
+        public async Task ConnectToServerAsync(CancellationToken token)
+        {
+            await PipeFromClient.ConnectAsync(token);
+            var errcode = (uint)await this.ClientSendVerb(Verbs.EstablishConnection, 0);
+            if (errcode != 0)
+            {
+                var errmsg = (string)await this.ClientSendVerb(Verbs.GetLastError, null);
+                throw new Exception($"Error establishing connection to server " + errmsg);
+            }
+        }
+
+
         /// <summary>
         /// The verbs are added to the Verbs enum and each has a two part implementation: one part that runs in the client code
         /// and one that runs in the separate 64 bit server process 
@@ -52,9 +68,46 @@ namespace MapFileDict
         /// Sending a verb can require an Acknowledge, but it's not required.
         /// WriteVerbAsync does wait for the Ack.
         /// A verb can have an argument or return a result. Complex arguments can be put into an object, as samples below show
+        /// IMPORTANT: in the client code, don't write to the server pipe and vv: they are both live when run as inproc. As out of proc a nullref.
         /// </summary>
         void AddVerbs()
         {
+            AddVerb(Verbs.EstablishConnection,
+                 actClientSendVerb: async (arg) =>
+                 {
+                     await PipeFromClient.WriteVerbAsync(Verbs.EstablishConnection);
+                     await PipeFromClient.WriteUInt32(ConnectionVersion);
+                     var errcode = await PipeFromClient.ReadUInt32();
+                     return errcode;
+                 },
+                 actServerDoVerb: async (arg) =>
+                 {
+                     await PipeFromServer.WriteAcknowledgeAsync();
+                     var clientVersion = await PipeFromServer.ReadUInt32();
+                     uint errCode = 0;
+                     if (clientVersion != ConnectionVersion)
+                     {
+                         LastError = $"Error Connection Version mismatch: ServerVersion:{ConnectionVersion} ClientVersion:{clientVersion}";
+                         errCode = 1;
+                     }
+                     PipeFromServer.WriteByte((byte)errCode); // error
+                     return null;
+                 });
+            AddVerb(Verbs.GetLastError,
+                 actClientSendVerb: async (arg) =>
+                 {
+                     await PipeFromClient.WriteVerbAsync(Verbs.GetLastError);
+                     var errMsg = (string)await PipeFromClient.ReadStringAsAsciiAsync();
+                     return errMsg;
+                 },
+                 actServerDoVerb: async (arg) =>
+                 {
+                     await PipeFromServer.WriteAcknowledgeAsync();
+                     await PipeFromServer.WriteStringAsAsciiAsync(LastError);
+                     LastError = string.Empty;
+                     return null; // tell the server loop to quit
+                 });
+
             AddVerb(Verbs.ServerQuit,
                  actClientSendVerb: async (arg) =>
                  {
@@ -65,7 +118,7 @@ namespace MapFileDict
                  {
                      Trace.WriteLine($"# dict entries = {dictObjRef.Count}");
                      await PipeFromServer.WriteAcknowledgeAsync();
-                     return Verbs.ServerQuit;
+                     return Verbs.ServerQuit; // tell the server loop to quit
                  });
 
             AddVerb(Verbs.GetLog,
@@ -212,9 +265,9 @@ namespace MapFileDict
             AddVerb(Verbs.SendObjAndReferences,
                 actClientSendVerb: async (arg) =>
                 {
+                    PipeFromClient.WriteByte((byte)Verbs.SendObjAndReferences);
                     var tup = (Tuple<uint, List<uint>>)arg;
                     var numChildren = tup.Item2?.Count ?? 0;
-                    PipeFromClient.WriteByte((byte)Verbs.SendObjAndReferences);
                     await PipeFromClient.WriteUInt32(tup.Item1);
                     await PipeFromClient.WriteUInt32((uint)numChildren);
                     for (int iChild = 0; iChild < numChildren; iChild++)
@@ -322,7 +375,7 @@ namespace MapFileDict
                     if (dictInverted.TryGetValue(objQuery, out var lstParents))
                     {
                         var numParents = lstParents?.Count;
-//                        Trace.WriteLine($"Server: {objQuery:x8}  NumParents={numParents}");
+                        //                        Trace.WriteLine($"Server: {objQuery:x8}  NumParents={numParents}");
                         if (numParents > 0)
                         {
                             foreach (var parent in lstParents)

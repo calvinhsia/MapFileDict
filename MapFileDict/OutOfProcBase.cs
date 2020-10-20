@@ -189,10 +189,6 @@ namespace MapFileDict
             });
             await tcsStaThread.Task;
         }
-        public Task ConnectAsync(CancellationToken token)
-        {
-            return PipeFromClient.ConnectAsync(token);
-        }
 
         async Task DoServerLoopAsync()
         {
@@ -515,11 +511,6 @@ namespace MapFileDict
             {
                 Trace.Write($"Didn't get Expected Ack");
             }
-        }
-        public static async Task<Verbs> ReadVerbAsync(this PipeStream pipe)
-        {
-            var buff = await ReadTimeout(pipe, 1);
-            return (Verbs)buff[0];
         }
         /// <summary>
         /// Sends verb and waits for ack
