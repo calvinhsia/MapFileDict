@@ -24,6 +24,7 @@ namespace MapFileDict
         public bool CreateServerOutOfProc = true; // or can be inproc for testing
         public string ExistingExeNameToUseForServer = string.Empty;
         public string exeNameToCreate = string.Empty; // defaults to "tempasm.exe" in curdir
+        public bool UseExistingExeIfExists = false; // false for unit tests, so will be deleted. True for production, so created EXE persists. Beware updates with diff versions
         public PortableExecutableKinds portableExecutableKinds = PortableExecutableKinds.PE32Plus;
         public ImageFileMachine imageFileMachine = ImageFileMachine.AMD64;
         public string AdditionalAssemblyPaths = string.Empty;
@@ -122,7 +123,7 @@ namespace MapFileDict
             var createIt = true;
             try
             {
-                if (File.Exists(asm64BitFile))
+                if (File.Exists(asm64BitFile) && !Options.UseExistingExeIfExists)
                 {
                     File.Delete(asm64BitFile);
                 }
@@ -152,7 +153,7 @@ namespace MapFileDict
             ProcServer = Process.Start(
                 asm64BitFile,
                 args);
-            Trace.WriteLine($"Client: started server PidClient={pidClient} PidServer={ProcServer.Id} {typeToInstantiateName}");
+            Trace.WriteLine($"Client: started server PidClient={pidClient} PidServer={ProcServer.Id} {asm64BitFile}");
         }
         /// <summary>
         /// This is entry point in the 64 bit server process. Create an execution context for the asyncs

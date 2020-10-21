@@ -32,7 +32,7 @@ namespace MapFileDict
     }
     public class OutOfProc : OutOfProcBase
     {
-        public uint ConnectionVersion = 1;
+        public static uint ConnectionVersion = 1;
         public string LastError = string.Empty;
         Dictionary<uint, List<uint>> dictObjRef = new Dictionary<uint, List<uint>>();
         Dictionary<uint, List<uint>> dictInverted = null;
@@ -53,8 +53,8 @@ namespace MapFileDict
             var errcode = (uint)await this.ClientSendVerb(Verbs.EstablishConnection, 0);
             if (errcode != 0)
             {
-                var errmsg = (string)await this.ClientSendVerb(Verbs.GetLastError, null);
-                throw new Exception($"Error establishing connection to server " + errmsg);
+                var lastError = (string)await this.ClientSendVerb(Verbs.GetLastError, null);
+                throw new Exception($"Error establishing connection to server " + lastError);
             }
         }
 
@@ -97,8 +97,8 @@ namespace MapFileDict
                  actClientSendVerb: async (arg) =>
                  {
                      await PipeFromClient.WriteVerbAsync(Verbs.GetLastError);
-                     var errMsg = (string)await PipeFromClient.ReadStringAsAsciiAsync();
-                     return errMsg;
+                     var lastError = (string)await PipeFromClient.ReadStringAsAsciiAsync();
+                     return lastError;
                  },
                  actServerDoVerb: async (arg) =>
                  {

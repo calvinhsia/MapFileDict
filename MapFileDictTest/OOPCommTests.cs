@@ -4,12 +4,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
-using System.IO.Pipes;
 using System.Linq;
-using System.Runtime.InteropServices;
-using System.Runtime.Serialization.Formatters.Binary;
-using System.Text;
-using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -395,7 +390,7 @@ Inverted Dictionary
                         lstParentChain.Add(lstParents[0]);
                         foreach (var parentObjId in lstParents.Take(10))
                         {
-//                            Trace.WriteLine($"{indent}  {parentObjId:x8}");
+                            //                            Trace.WriteLine($"{indent}  {parentObjId:x8}");
                             await WalkParentTreeAsync(parentObjId, level + 1);
                         }
                     }
@@ -539,6 +534,73 @@ IntPtr.Size = 8 Shared Memory region address
 
                         var strbig = (string)await oop.ClientSendVerb(Verbs.GetStringSharedMem, 0);
                         Trace.Write($"Got big string Len = {strbig.Length} " + strbig);
+
+                        Trace.WriteLine($"Server Logs: " + await oop.ClientSendVerb(Verbs.GetLog, null));
+                        Trace.WriteLine("Client: sending quit");
+                        await oop.ClientSendVerb(Verbs.ServerQuit, null);
+                    }
+                    catch (Exception ex)
+                    {
+                        Trace.WriteLine(ex.ToString());
+                        throw;
+                    }
+                }
+
+                var nDelaySecs = Debugger.IsAttached ? 3000 : 20;
+                var tskDelay = Task.Delay(TimeSpan.FromSeconds(nDelaySecs));
+                await Task.WhenAny(new[] { tskDelay, taskServerDone });
+                if (tskDelay.IsCompleted)
+                {
+                    Trace.WriteLine($"Delay {nDelaySecs} secs completed: cancelling server");
+                    cts.Cancel();
+                }
+                Trace.WriteLine($"Done");
+                if (!oop.Options.CreateServerOutOfProc)
+                {
+                    await oop.DoServerLoopTask;
+                    Assert.IsTrue(oop.DoServerLoopTask.IsCompleted);
+                }
+            }
+        }
+        [TestMethod]
+        public async Task OOPCreateServerConstantExe()
+        {
+            var cts = new CancellationTokenSource();
+            var LocalAppDir = Path.Combine(Environment.ExpandEnvironmentVariables("%localappdata%"), "VSDbg");
+            Directory.CreateDirectory(LocalAppDir);
+            var options = new OutOfProcOptions()
+            {
+                CreateServerOutOfProc = true,
+                // avoid writing to temp dir because System.ComponentModel.Win32Exception (0x80004005): Operation did not complete successfully because the file contains a virus or potentially unwanted software
+                // put the connectionversion in the exe name so as we upgrade, no collisions
+                exeNameToCreate = Path.Combine(LocalAppDir, $"OutOfProc{OutOfProc.ConnectionVersion}.exe"),
+                UseExistingExeIfExists = true,
+            };
+            using (var oop = new OutOfProc(options, cts.Token))
+            {
+                Task taskServerDone;
+                if (!oop.Options.CreateServerOutOfProc)
+                {
+                    taskServerDone = oop.DoServerLoopTask;
+                }
+                else
+                {
+                    taskServerDone = Task.Delay(100);
+                }
+
+                Trace.WriteLine("Starting Client");
+                {
+                    try
+                    {
+                        await oop.ConnectToServerAsync(cts.Token);
+
+                        //                        await oop.ClientSendVerb(Verbs.DoMessageBox, $"Message From Client");
+                        await oop.ClientSendVerb(Verbs.Delayms, (uint)2);
+
+                        //Trace.WriteLine("Client: sending quit");
+                        //await oop.ClientSendVerb(Verbs.ServerQuit, null);
+                        //return;
+                        var str = await oop.ClientSendVerb(Verbs.verbRequestData, null);
 
                         Trace.WriteLine($"Server Logs: " + await oop.ClientSendVerb(Verbs.GetLog, null));
                         Trace.WriteLine("Client: sending quit");
