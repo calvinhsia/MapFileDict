@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO.Pipes;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
@@ -279,14 +280,14 @@ namespace MapFileDict
                 },
                 actServerDoVerb: async (arg) =>
                 {
-                    var lst = new List<uint>();
+                    var hashset = new List<uint>();// EnumerateObjectReferences sometimes has duplicate children <sigh>
                     var obj = await PipeFromServer.ReadUInt32();
                     var cnt = await PipeFromServer.ReadUInt32();
                     for (int i = 0; i < cnt; i++)
                     {
-                        lst.Add(await PipeFromServer.ReadUInt32());
+                        hashset.Add(await PipeFromServer.ReadUInt32());
                     }
-                    dictObjRef[obj] = lst;
+                    dictObjRef[obj] = hashset.ToList();
                     Trace.WriteLine($"Server got {nameof(Verbs.SendObjAndReferences)}  {obj:x8} # child = {cnt:n0}");
                     await PipeFromServer.WriteAcknowledgeAsync();
                     return null;
@@ -314,7 +315,7 @@ namespace MapFileDict
                     var bufNdx = 0;
                     while (true)
                     {
-                        var lst = new List<uint>();
+                        var hashset = new HashSet<uint>();// EnumerateObjectReferences sometimes has duplicate children <sigh>
                         var obj = BitConverter.ToUInt32(buf, bufNdx);
                         bufNdx += 4; // sizeof IntPtr in the client process
                         if (obj == 0)
@@ -327,11 +328,11 @@ namespace MapFileDict
                         {
                             for (int i = 0; i < cnt; i++)
                             {
-                                lst.Add(BitConverter.ToUInt32(buf, bufNdx));
+                                hashset.Add(BitConverter.ToUInt32(buf, bufNdx));
                                 bufNdx += 4;
                             }
                         }
-                        dictObjRef[obj] = lst;
+                        dictObjRef[obj] = hashset.ToList();
                     }
                     await PipeFromServer.WriteAcknowledgeAsync();
                     return null;
