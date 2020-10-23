@@ -123,9 +123,16 @@ namespace MapFileDict
             var createIt = true;
             try
             {
-                if (File.Exists(asm64BitFile) && !Options.UseExistingExeIfExists)
+                if (File.Exists(asm64BitFile))
                 {
-                    File.Delete(asm64BitFile);
+                    if (Options.UseExistingExeIfExists)
+                    {
+                        createIt = false;
+                    }
+                    else
+                    {
+                        File.Delete(asm64BitFile);
+                    }
                 }
             }
             catch (Exception ex)
