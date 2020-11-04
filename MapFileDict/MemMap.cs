@@ -274,39 +274,43 @@ namespace MapFileDict
 
         MappingData CreateAMapping(ulong newSize)
         {
-            // a unique string to this process, and different from an existing map filename
-            var mapName = string.Format("{0}{1}{2}", _MapName, ++_stats._nFileMaps, Process.GetCurrentProcess().Id); //"MapFileUI"
+            while (true)
+            {
+                // a unique string to this process, and different from an existing map filename
+                var mapName = string.Format("{0}{1}{2}", _MapName, ++_stats._nFileMaps, Process.GetCurrentProcess().Id); //"MapFileUI"
 
-            var hFileMapping = NativeMethods.CreateFileMapping(
-                _hFileHandle, // INVALID_HANDLE_VALUE means use os page file
-                IntPtr.Zero, // lpSecurityAttributes
-                (uint)NativeMethods.PAGE_READWRITE,
-                (uint)(newSize >> 32 & UInt32.MaxValue),
-                (uint)(newSize & UInt32.MaxValue),
-                mapName
-                );
-            var err = Marshal.GetLastWin32Error();
-            if (hFileMapping == IntPtr.Zero)
-            {
-                var h = Marshal.GetHRForLastWin32Error();
-                // 2^35 = 34,359,738,368   1455 = The paging file is too small for this operation to complete. 
-                if (h == 1455) // 34 Gigs!Total paging file size for all drives: 26,560Meg
+                var hFileMapping = NativeMethods.CreateFileMapping(
+                    _hFileHandle, // INVALID_HANDLE_VALUE means use os page file
+                    IntPtr.Zero, // lpSecurityAttributes
+                    (uint)NativeMethods.PAGE_READWRITE,
+                    (uint)(newSize >> 32 & UInt32.MaxValue),
+                    (uint)(newSize & UInt32.MaxValue),
+                    mapName
+                    );
+                var err = Marshal.GetLastWin32Error();
+                if (hFileMapping == IntPtr.Zero)
                 {
-                    throw new OutOfMemoryException(string.Format("The paging file is too small for this operation to complete.  {0} {1}", err, h));
+                    var h = Marshal.GetHRForLastWin32Error();
+                    // 2^35 = 34,359,738,368   1455 = The paging file is too small for this operation to complete. 
+                    if (h == 1455) // 34 Gigs!Total paging file size for all drives: 26,560Meg
+                    {
+                        throw new OutOfMemoryException(string.Format("The paging file is too small for this operation to complete.  {0} {1}", err, h));
+                    }
+                    throw new OutOfMemoryException(string.Format("Can't create file mapping {0} {1}", err, h));
                 }
-                throw new OutOfMemoryException(string.Format("Can't create file mapping {0} {1}", err, h));
+                // If the object exists before the function call, the function returns a handle to the existing object (with its current size, not the specified size), and GetLastErrorreturns ERROR_ALREADY_EXISTS.
+                if (err == NativeMethods.ERROR_ALREADY_EXISTS)
+                {
+                    NativeMethods.CloseHandle(hFileMapping);
+                    continue;
+                }
+                var mapData = new MappingData()
+                {
+                    _hFileMapping = hFileMapping,
+                    _ulFileSize = newSize
+                };
+                return mapData;
             }
-            if (err == NativeMethods.ERROR_ALREADY_EXISTS)
-            {
-                NativeMethods.CloseHandle(hFileMapping);
-                throw new InvalidOperationException("FileMapping Already Exists");
-            }
-            var mapData = new MappingData()
-            {
-                _hFileMapping = hFileMapping,
-                _ulFileSize = newSize
-            };
-            return mapData;
         }
         /// <summary>
         /// garbage collect/compact the data
