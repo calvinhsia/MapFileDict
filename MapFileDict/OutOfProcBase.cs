@@ -281,12 +281,14 @@ namespace MapFileDict
 
             Trace.WriteLine("Server: exiting servertask");
         }
+
+        public bool ClientAndServerInSameProcess => ProcServer == null;
         /// <summary>
         /// Called from both client and server. Given a name, creates memory region of specified size (mult 64k) that can be addressed by each process
         /// </summary>
         internal void CreateSharedSection(string memRegionName, uint regionSize)
         {
-            if (Process.GetCurrentProcess().Id == pidClient && _MemoryMappedRegionAddress != IntPtr.Zero)
+            if (ClientAndServerInSameProcess && _MemoryMappedRegionAddress != IntPtr.Zero)
             {
                 return;// client and server in same proc, so same region is shared
             }
@@ -305,7 +307,24 @@ namespace MapFileDict
                size: 0,
                access: MemoryMappedFileAccess.ReadWrite);
             _MemoryMappedRegionAddress = _MemoryMappedFileViewForSharedRegion.SafeMemoryMappedViewHandle.DangerousGetHandle();
-            Trace.WriteLine($"IntPtr.Size = {IntPtr.Size} Shared Memory region address 0x{_MemoryMappedRegionAddress.ToInt64():x16}");
+            Trace.WriteLine($"{Process.GetCurrentProcess().ProcessName} IntPtr.Size = {IntPtr.Size} Creating Shared Memory region size = {_sharedMapSize} address {_MemoryMappedRegionAddress.ToInt64():x16}");
+        }
+        /// <summary>
+        /// Called from both client and server, clears the shared memory region
+        /// </summary>
+        internal void CloseSharedSection()
+        {
+            if (_MemoryMappedRegionAddress != IntPtr.Zero)
+            {
+                Trace.WriteLine($"{Process.GetCurrentProcess().ProcessName} IntPtr.Size = {IntPtr.Size} Closing Shared Memory region size = {_sharedMapSize} address {_MemoryMappedRegionAddress.ToInt64():x16}");
+                _MemoryMappedFileViewForSharedRegion?.Dispose();
+                _MemoryMappedFileViewForSharedRegion = null;
+                _MemoryMappedFileForSharedRegion?.Dispose();
+                _MemoryMappedFileForSharedRegion = null;
+                _MemoryMappedRegionAddress = IntPtr.Zero;
+                _sharedMapSize = 0;
+                _sharedFileMapName = null;
+            }
         }
         public void AddVerb(Verbs verb,
             Func<object, Task<object>> actClientSendVerb,
@@ -335,7 +354,7 @@ namespace MapFileDict
                 {
                     Trace.WriteLine($"Waiting for server to exit Pid={ProcServer.Id}");
                     Thread.Sleep(TimeSpan.FromSeconds(1));
-                    if (!Debugger.IsAttached && nRetries > 5)
+                    if (!Debugger.IsAttached && nRetries++ > 5)
                     {
                         Trace.WriteLine($"Killing server process");
                         ProcServer.Kill();
@@ -353,8 +372,7 @@ namespace MapFileDict
             }
             PipeFromClient?.Dispose();
             PipeFromServer?.Dispose();
-            _MemoryMappedFileViewForSharedRegion?.Dispose();
-            _MemoryMappedFileForSharedRegion?.Dispose();
+            CloseSharedSection();
             mylistener?.Dispose();
         }
         [DllImport("user32")]

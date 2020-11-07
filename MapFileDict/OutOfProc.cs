@@ -16,7 +16,12 @@ namespace MapFileDict
         GetLastError, // get the last error from the server. Will be reset to ""
         ServerQuit, // Quit the server process. Sends an Ack, so must wait for ack before done
         Acknowledge, // acknowledge receipt of verb
+        /// <summary>
+        /// 1 param: uint region size. Most efficient if multiple of AllocationGranularity=64k
+        /// Sets <see cref="_MemoryMappedRegionAddress"/>
+        /// </summary>
         CreateSharedMemSection, // create a region of memory that can be shared between the client/server
+        CloseSharedMemSection,
         GetLog, // get server log entries: will clear all entries so far
         GetString, // very slow
         GetStringSharedMem, // very fast
@@ -165,6 +170,10 @@ namespace MapFileDict
             AddVerb(Verbs.CreateSharedMemSection,
                 actClientSendVerb: async (arg) =>
                 {
+                    if (_MemoryMappedRegionAddress != IntPtr.Zero)
+                    {
+                        throw new InvalidOperationException($"Shared memory region already created");
+                    }
                     var sharedRegionSize = (uint)arg;
                     await PipeFromClient.WriteVerbAsync(Verbs.CreateSharedMemSection);
                     await PipeFromClient.WriteUInt32(sharedRegionSize);
@@ -177,8 +186,24 @@ namespace MapFileDict
                     await PipeFromServer.WriteAcknowledgeAsync();
                     var sizeRegion = await PipeFromServer.ReadUInt32();
                     CreateSharedSection(memRegionName: $"MapFileDictSharedMem_{pidClient}\0", regionSize: sizeRegion);
-                    Trace.WriteLine($"{Process.GetCurrentProcess().ProcessName} IntPtr.Size = {IntPtr.Size} Shared Memory region address {_MemoryMappedRegionAddress.ToInt64():x16}");
                     await PipeFromServer.WriteStringAsAsciiAsync(_sharedFileMapName);
+                    return null;
+                });
+
+            AddVerb(Verbs.CloseSharedMemSection,
+                actClientSendVerb: async (arg) =>
+                {
+                    if (!ClientAndServerInSameProcess)
+                    {
+                        await PipeFromClient.WriteVerbAsync(Verbs.CloseSharedMemSection);
+                    }
+                    CloseSharedSection();
+                    return null;
+                },
+                actServerDoVerb: async (arg) =>
+                {
+                    CloseSharedSection();
+                    await PipeFromServer.WriteAcknowledgeAsync();
                     return null;
                 });
 

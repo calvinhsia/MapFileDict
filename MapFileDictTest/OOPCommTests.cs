@@ -5,6 +5,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -276,7 +277,7 @@ Children of "<- System.IO.MemoryMappedFiles.MemoryMappedViewAccessor  120cd2dc"
                 throw;
             }
             VerifyLogStrings(@"
-IntPtr.Size = 8 Shared Memory region
+IntPtr.Size = 8 Creating Shared Memory region
 # dict entries = 1223023
 034610b4 SystemStackOverflowException has 0 parents
 120cd2dc MemoryMappedViewAccessor has 2 parents
@@ -427,8 +428,8 @@ Inverted Dictionary
 Server: Getlog
 IntPtr.Size = 8 Trace Listener created
 Server: Getlog #entries
-IntPtr.Size = 4 Shared Memory region address
-IntPtr.Size = 8 Shared Memory region address
+IntPtr.Size = 4 Creating Shared Memory region
+IntPtr.Size = 8 Creating Shared Memory region
 ");
         }
 
@@ -443,8 +444,8 @@ IntPtr.Size = 8 Shared Memory region address
             });
 
             VerifyLogStrings(@"
-IntPtr.Size = 4 Shared Memory region address
-IntPtr.Size = 8 Shared Memory region address
+IntPtr.Size = 4 Creating Shared Memory region
+IntPtr.Size = 8 Creating Shared Memory region
 ");
         }
 
@@ -628,6 +629,86 @@ IntPtr.Size = 8 Shared Memory region address
                     Assert.IsTrue(oop.DoServerLoopTask.IsCompleted);
                 }
             }
+        }
+
+        [TestMethod]
+        public async Task OOPTestUnion()
+        {
+            var cts = new CancellationTokenSource();
+            using (var oop = new OutOfProc(
+                new OutOfProcOptions()
+                {
+                    CreateServerOutOfProc = true
+                },
+                cts.Token))
+            {
+                Task taskServerDone;
+                if (!oop.Options.CreateServerOutOfProc)
+                {
+                    taskServerDone = oop.DoServerLoopTask;
+                }
+                else
+                {
+                    taskServerDone = Task.Delay(100);
+                }
+
+                Trace.WriteLine("Starting Client");
+                {
+                    try
+                    {
+                        await oop.ConnectToServerAsync(cts.Token);
+                        var sharedRegionChunkSize = 1 * 65536u;
+                        await oop.ClientSendVerb(Verbs.CreateSharedMemSection, sharedRegionChunkSize);
+
+                        unsafe
+                        {
+                            var x = new MemBuf();
+                            for (uint i = 0; i < 10; i++)
+                            {
+                                x.UInts[i] = i;
+                            }
+                            for (int i = 0; i < 4; i++)
+                            {
+                                var b = x.Bytes[i];
+                                Trace.WriteLine($"Read back {i} {b}");
+                            }
+                        }
+
+                        Trace.WriteLine($"Server Logs: " + await oop.ClientSendVerb(Verbs.GetLog, null));
+                        Trace.WriteLine("Client: sending quit");
+                        await oop.ClientSendVerb(Verbs.ServerQuit, null);
+                    }
+                    catch (Exception ex)
+                    {
+                        Trace.WriteLine(ex.ToString());
+                        throw;
+                    }
+                }
+
+                var nDelaySecs = Debugger.IsAttached ? 3000 : 20;
+                var tskDelay = Task.Delay(TimeSpan.FromSeconds(nDelaySecs));
+                await Task.WhenAny(new[] { tskDelay, taskServerDone });
+                if (tskDelay.IsCompleted)
+                {
+                    Trace.WriteLine($"Delay {nDelaySecs} secs completed: cancelling server");
+                    cts.Cancel();
+                }
+                Trace.WriteLine($"Done");
+                if (!oop.Options.CreateServerOutOfProc)
+                {
+                    await oop.DoServerLoopTask;
+                    Assert.IsTrue(oop.DoServerLoopTask.IsCompleted);
+                }
+            }
+        }
+
+        [StructLayout(LayoutKind.Explicit)]
+        public unsafe struct MemBuf
+        {
+            [FieldOffset(0)]
+            public fixed byte Bytes[65536];
+            [FieldOffset(0)]
+            public fixed uint UInts[65536 / 4];
         }
     }
 }
