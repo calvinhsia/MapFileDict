@@ -263,7 +263,6 @@ Children of "<- System.IO.MemoryMappedFiles.MemoryMappedViewAccessor  120cd2dc"
                      await oop.ClientSendVerb(Verbs.CreateInvertedDictionary, null);
                      Trace.WriteLine($"Inverted Dictionary");
 
-                     await oop.ClientSendVerb(Verbs.CreateSharedMemSection, 65536U);
 
                      await DoQueryForParents(oop, SystemStackOverflowException, nameof(SystemStackOverflowException));
                      await DoQueryForParents(oop, MemoryMappedViewAccessor, nameof(MemoryMappedViewAccessor));
@@ -414,7 +413,6 @@ Inverted Dictionary
             await DoServerStuff(options, async (oop) =>
             {
                 //                await oop.ClientSendVerb(Verbs.DoMessageBox, $"Message From Client");
-                await oop.ClientSendVerb(Verbs.CreateSharedMemSection, 65536U);
 
                 for (int i = 0; i < 5; i++)
                 {
@@ -438,7 +436,6 @@ IntPtr.Size = 8 Creating Shared Memory region
         {
             await DoServerStuff(null, async (oop) =>
             {
-                await oop.ClientSendVerb(Verbs.CreateSharedMemSection, 65536U);
                 //                    await Task.Delay(5000);
                 Trace.WriteLine($"Server Logs: " + await oop.ClientSendVerb(Verbs.GetLog, null));
             });
@@ -462,6 +459,7 @@ IntPtr.Size = 8 Creating Shared Memory region
                 Trace.WriteLine($"Client: starting to connect");
                 await oop.ConnectToServerAsync(cts.Token);
                 Trace.WriteLine($"Client: connected");
+                await oop.ClientSendVerb(Verbs.CreateSharedMemSection, 65536u);
                 await func(oop);
                 await oop.ClientSendVerb(Verbs.ServerQuit, null);
             }
@@ -662,7 +660,8 @@ IntPtr.Size = 8 Creating Shared Memory region
 
                         unsafe
                         {
-                            var x = new MemBuf();
+//                            var bufs = new MemBuf[1]; // https://www.iobservable.net/blog/2013/08/06/clr-limitations/
+                            var x = new MemBufChunk();
                             for (uint i = 0; i < 10; i++)
                             {
                                 x.UInts[i] = i;
@@ -681,7 +680,7 @@ IntPtr.Size = 8 Creating Shared Memory region
                     catch (Exception ex)
                     {
                         Trace.WriteLine(ex.ToString());
-                        throw;
+                        //   throw;
                     }
                 }
 
@@ -702,13 +701,5 @@ IntPtr.Size = 8 Creating Shared Memory region
             }
         }
 
-        [StructLayout(LayoutKind.Explicit)]
-        public unsafe struct MemBuf
-        {
-            [FieldOffset(0)]
-            public fixed byte Bytes[65536];
-            [FieldOffset(0)]
-            public fixed uint UInts[65536 / 4];
-        }
     }
 }

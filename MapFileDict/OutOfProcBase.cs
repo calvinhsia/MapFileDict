@@ -425,18 +425,24 @@ namespace MapFileDict
     public class MyTraceListener : TextWriterTraceListener
     {
         public List<string> lstLoggedStrings = new List<string>();
+        bool IsInTraceListener = false;
         public MyTraceListener()
         {
         }
         public override void WriteLine(string str)
         {
-            var dt = string.Format("[{0}],",
-                 DateTime.Now.ToString("hh:mm:ss:fff")
-                 ) + $"{Thread.CurrentThread.ManagedThreadId,2} ";
-            lstLoggedStrings.Add(dt + str);
-            if (Debugger.IsAttached)
+            if (!IsInTraceListener)
             {
-                Debug.WriteLine(dt + str);
+                IsInTraceListener = true;
+                var dt = string.Format("[{0}],",
+                     DateTime.Now.ToString("hh:mm:ss:fff")
+                     ) + $"{Thread.CurrentThread.ManagedThreadId,2} ";
+                lstLoggedStrings.Add(dt + str);
+                if (Debugger.IsAttached)
+                {
+                    Debug.WriteLine(dt + str);
+                }
+                IsInTraceListener = false;
             }
         }
 
@@ -482,6 +488,14 @@ namespace MapFileDict
                 Trace.WriteLine($"Error writing to log #retries ={nRetry}");
             }
         }
+    }
+    [StructLayout(LayoutKind.Explicit, Size = 65536)]
+    public unsafe struct MemBufChunk
+    {
+        [FieldOffset(0)]
+        public fixed byte Bytes[65536];
+        [FieldOffset(0)]
+        public fixed uint UInts[65536 / 4];
     }
 
     public static class ExtensionMethods

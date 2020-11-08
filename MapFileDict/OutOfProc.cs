@@ -38,7 +38,7 @@ namespace MapFileDict
     }
     public class OutOfProc : OutOfProcBase
     {
-        public static uint ConnectionVersion = 1;
+        public static uint ConnectionVersion = 2;
         public string LastError = string.Empty;
         Dictionary<uint, List<uint>> dictObjRef = new Dictionary<uint, List<uint>>();
         Dictionary<uint, List<uint>> dictInverted = null;
@@ -323,41 +323,34 @@ namespace MapFileDict
                 actClientSendVerb: async (arg) =>
                 {
                     await PipeFromClient.WriteVerbAsync(Verbs.SendObjAndReferencesInChunks);
-                    var tup = (Tuple<byte[], int>)arg;
-                    var bufChunk = tup.Item1;
-                    var ndxbufChunk = tup.Item2;
-                    await PipeFromClient.WriteUInt32((uint)ndxbufChunk);
-                    await PipeFromClient.WriteAsync(bufChunk, 0, ndxbufChunk);
                     await PipeFromClient.ReadAcknowledgeAsync();
                     return null;
                 },
                 actServerDoVerb: async (arg) =>
                 {
                     await PipeFromServer.WriteAcknowledgeAsync();
-                    var bufSize = (int)await PipeFromServer.ReadUInt32();
-                    var buf = new byte[bufSize];
-                    await PipeFromServer.ReadAsync(buf, 0, (int)bufSize);
                     var bufNdx = 0;
-                    while (true)
+                    unsafe
                     {
-                        var hashset = new HashSet<uint>();// EnumerateObjectReferences sometimes has duplicate children <sigh>
-                        var obj = BitConverter.ToUInt32(buf, bufNdx);
-                        bufNdx += 4; // sizeof IntPtr in the client process
-                        if (obj == 0)
+                        var ptr = (uint*)_MemoryMappedRegionAddress;
+                        while (true)
                         {
-                            break;
-                        }
-                        var cnt = BitConverter.ToUInt32(buf, bufNdx);
-                        bufNdx += 4;
-                        if (cnt > 0)
-                        {
-                            for (int i = 0; i < cnt; i++)
+                            var hashset = new HashSet<uint>();// EnumerateObjectReferences sometimes has duplicate children <sigh>
+                            var obj = ptr[bufNdx++];
+                            if (obj == 0)
                             {
-                                hashset.Add(BitConverter.ToUInt32(buf, bufNdx));
-                                bufNdx += 4;
+                                break;
                             }
+                            var cnt = ptr[bufNdx++];
+                            if (cnt > 0)
+                            {
+                                for (int i = 0; i < cnt; i++)
+                                {
+                                    hashset.Add(ptr[bufNdx++]);
+                                }
+                            }
+                            dictObjRef[obj] = hashset.ToList();
                         }
-                        dictObjRef[obj] = hashset.ToList();
                     }
                     await PipeFromServer.WriteAcknowledgeAsync();
                     return null;
@@ -419,46 +412,51 @@ namespace MapFileDict
         /// This runs on the client to send the data in chunks to the server. The object graph is multi million objects
         /// so we don't want to create them all in a data structure to send, but enumerate them and send in chunks
         /// </summary>
-        public async Task<Tuple<int, int>> SendObjGraphEnumerableInChunksAsync(IEnumerable<Tuple<uint, List<uint>>> ienumOGraph)
+        public async Task<Tuple<int, int>> SendObjGraphEnumerableInChunksAsync(IEnumerable<Tuple<uint, List<uint>>> ienumOGraph) // don't want to have dependency on ValueTuple
         {
-            var bufChunkSize = 65532;
-            var bufChunk = new byte[bufChunkSize + 4]; // leave extra room for null term
+            if (_MemoryMappedRegionAddress == IntPtr.Zero)
+            {
+                throw new InvalidOperationException("Sending requires shared mem region");
+            }
+            // can't have unsafe in lambda or anon func
+            var bufChunkSize = _sharedMapSize - 4;// leave extra room for null term
             int ndxbufChunk = 0;
             var numChunksSent = 0;
             var numObjs = 0;
             foreach (var tup in ienumOGraph)
             {
                 numObjs++;
-                var numChildren = tup.Item2?.Count ?? 0;
+                var numChildren = (uint)(tup.Item2?.Count ?? 0);
                 var numBytesForThisObj = (1 + 1 + numChildren) * IntPtr.Size; // obj + childCount + children
                 if (numBytesForThisObj >= bufChunkSize)
                 { // if the entire obj won't fit, we have to send a different way
-                    // 0450ee60 Roslyn.Utilities.StringTable+Entry[]
-                    // 0460eea0 Microsoft.CodeAnalysis.VisualBasic.Syntax.InternalSyntax.SyntaxNodeCache+Entry[]
-                    // 049b90e0 Microsoft.CodeAnalysis.SyntaxNode[]
+                  // 0450ee60 Roslyn.Utilities.StringTable+Entry[]
+                  // 0460eea0 Microsoft.CodeAnalysis.VisualBasic.Syntax.InternalSyntax.SyntaxNodeCache+Entry[]
+                  // 049b90e0 Microsoft.CodeAnalysis.SyntaxNode[]
                     Trace.WriteLine($"The cur obj {tup.Item1:x8} size={numBytesForThisObj} is too big for chunk {bufChunkSize}: sending via non-chunk");
                     await ClientSendVerb(Verbs.SendObjAndReferences, tup); // send it on it's own with a different verb
+                    numChunksSent++;
                 }
                 else
                 {
-                    if (ndxbufChunk + numBytesForThisObj >= bufChunk.Length) // too big for cur buf?
+                    if (4 * ndxbufChunk + numBytesForThisObj >= bufChunkSize) // too big for cur buf?
                     {
-                        await SendBufferAsync(); // empty it
+                        unsafe
+                        {
+                            var ptr = (uint*)_MemoryMappedRegionAddress;
+                            ptr[ndxbufChunk++] = 0; //null term
+                        }
+                        await ClientSendVerb(Verbs.SendObjAndReferencesInChunks, ndxbufChunk);
                         ndxbufChunk = 0;
                     }
+                    unsafe
                     {
-                        var b1 = BitConverter.GetBytes(tup.Item1);
-                        Array.Copy(b1, 0, bufChunk, ndxbufChunk, b1.Length);
-                        ndxbufChunk += b1.Length;
-
-                        b1 = BitConverter.GetBytes(numChildren);
-                        Array.Copy(b1, 0, bufChunk, ndxbufChunk, b1.Length);
-                        ndxbufChunk += b1.Length;
+                        var ptr = (uint*)_MemoryMappedRegionAddress;
+                        ptr[ndxbufChunk++] = tup.Item1;
+                        ptr[ndxbufChunk++] = numChildren;
                         for (int iChild = 0; iChild < numChildren; iChild++)
                         {
-                            b1 = BitConverter.GetBytes(tup.Item2[iChild]);
-                            Array.Copy(b1, 0, bufChunk, ndxbufChunk, b1.Length);
-                            ndxbufChunk += b1.Length;
+                            ptr[ndxbufChunk++] = tup.Item2[iChild];
                         }
                     }
                 }
@@ -466,18 +464,15 @@ namespace MapFileDict
             if (ndxbufChunk > 0) // leftovers
             {
                 Trace.WriteLine($"Client: send leftovers {ndxbufChunk}");
-                await SendBufferAsync();
-            }
-            return Tuple.Create<int, int>(numObjs, numChunksSent);
-            async Task SendBufferAsync()
-            {
-                bufChunk[ndxbufChunk++] = 0; // null terminating int32
-                bufChunk[ndxbufChunk++] = 0;
-                bufChunk[ndxbufChunk++] = 0;
-                bufChunk[ndxbufChunk++] = 0;
-                await ClientSendVerb(Verbs.SendObjAndReferencesInChunks, Tuple.Create<byte[], int>(bufChunk, ndxbufChunk));
+                unsafe
+                {
+                    var ptr = (uint*)_MemoryMappedRegionAddress;
+                    ptr[ndxbufChunk++] = 0; //null term
+                }
+                await ClientSendVerb(Verbs.SendObjAndReferencesInChunks, ndxbufChunk);
                 numChunksSent++;
             }
+            return Tuple.Create<int, int>(numObjs, numChunksSent);
         }
 
         public static Dictionary<uint, List<uint>> InvertDictionary(Dictionary<uint, List<uint>> dictOGraph)
