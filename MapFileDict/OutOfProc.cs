@@ -507,10 +507,7 @@ namespace MapFileDict
         /// </summary>
         public async Task<Tuple<int, int>> SendObjGraphEnumerableInChunksAsync(IEnumerable<Tuple<uint, List<uint>>> ienumOGraph) // don't want to have dependency on ValueTuple
         {
-            if (_MemoryMappedRegionAddress == IntPtr.Zero)
-            {
-                throw new InvalidOperationException("Sending requires shared mem region");
-            }
+            await ClientSendVerb(Verbs.CreateSharedMemSection, 2 * MemMap.AllocationGranularity);
             // can't have unsafe in lambda or anon func
             var bufChunkSize = _sharedMapSize - 4;// leave extra room for null term
             int ndxbufChunk = 0;
@@ -554,6 +551,8 @@ namespace MapFileDict
                 Trace.WriteLine($"Client: send leftovers {ndxbufChunk}");
                 await SendBufferAsync();
             }
+            await ClientSendVerb(Verbs.CloseSharedMemSection, 0);
+            return Tuple.Create<int, int>(numObjs, numChunksSent);
             async Task SendBufferAsync()
             {
                 unsafe
@@ -564,7 +563,6 @@ namespace MapFileDict
                 await ClientSendVerb(Verbs.SendObjAndReferencesInChunks, ndxbufChunk);
                 numChunksSent++;
             }
-            return Tuple.Create<int, int>(numObjs, numChunksSent);
         }
 
         public static Dictionary<uint, List<uint>> InvertDictionary(Dictionary<uint, List<uint>> dictOGraph)

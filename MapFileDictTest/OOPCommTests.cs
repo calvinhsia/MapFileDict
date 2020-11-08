@@ -299,7 +299,6 @@ IntPtr.Size = 8 Creating Shared Memory region
                     {
                         await oop.ConnectToServerAsync(cts.Token);
 
-                        await oop.ClientSendVerb(Verbs.CreateSharedMemSection, 65536U);
 
                         var sw = Stopwatch.StartNew();
                         var ienumOGraph = GetObjectGraphIEnumerable();
@@ -427,26 +426,8 @@ Inverted Dictionary
 Server: Getlog
 IntPtr.Size = 8 Trace Listener created
 Server: Getlog #entries
-IntPtr.Size = 4 Creating Shared Memory region
-IntPtr.Size = 8 Creating Shared Memory region
 ");
         }
-
-        [TestMethod]
-        public async Task OOPTestGenAsm()
-        {
-            await DoServerStuff(null, async (oop) =>
-            {
-                //                    await Task.Delay(5000);
-                Trace.WriteLine($"Server Logs: " + await oop.ClientSendVerb(Verbs.GetLog, null));
-            });
-
-            VerifyLogStrings(@"
-IntPtr.Size = 4 Creating Shared Memory region
-IntPtr.Size = 8 Creating Shared Memory region
-");
-        }
-
 
         private async Task DoServerStuff(OutOfProcOptions options, Func<OutOfProc, Task> func)
         {
@@ -460,7 +441,6 @@ IntPtr.Size = 8 Creating Shared Memory region
                 Trace.WriteLine($"Client: starting to connect");
                 await oop.ConnectToServerAsync(cts.Token);
                 Trace.WriteLine($"Client: connected");
-                await oop.ClientSendVerb(Verbs.CreateSharedMemSection, 65536u);
                 await func(oop);
                 await oop.ClientSendVerb(Verbs.ServerQuit, null);
             }
@@ -656,8 +636,6 @@ IntPtr.Size = 8 Creating Shared Memory region
                     try
                     {
                         await oop.ConnectToServerAsync(cts.Token);
-                        var sharedRegionChunkSize = 1 * 65536u;
-                        await oop.ClientSendVerb(Verbs.CreateSharedMemSection, sharedRegionChunkSize);
                         await SendObjectsAndTypesAsync(new ClrUtil(), oop);
 
                         Trace.WriteLine($"Server Logs: " + await oop.ClientSendVerb(Verbs.GetLog, null));
@@ -689,6 +667,7 @@ IntPtr.Size = 8 Creating Shared Memory region
         }
         internal async Task SendObjectsAndTypesAsync(ClrUtil clrUtil, OutOfProc outOfProc)
         {
+            await outOfProc.ClientSendVerb(Verbs.CreateSharedMemSection, 2 * 65536u);
             uint typeIdNext = 0;
             var bufChunkSize = outOfProc._sharedMapSize - 8; // room for null term
             var numChunksSent = 0;
@@ -774,6 +753,7 @@ IntPtr.Size = 8 Creating Shared Memory region
             // send leftovers
             await SendBufferAsync(Verbs.SendTypeIdAndTypeNameInChunks);
             // now that we've sent all the data, let the server know and calculate the various data structures required
+            await outOfProc.ClientSendVerb(Verbs.CloseSharedMemSection, 0);
             await outOfProc.ClientSendVerb(Verbs.ObjsAndTypesDone, 0);
             async Task SendBufferAsync(Verbs verb)
             {
