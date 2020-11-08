@@ -6,6 +6,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -277,7 +278,7 @@ Children of "<- System.IO.MemoryMappedFiles.MemoryMappedViewAccessor  120cd2dc"
             }
             VerifyLogStrings(@"
 IntPtr.Size = 8 Creating Shared Memory region
-# dict entries = 1223023
+# dictObjRef = 1223023
 034610b4 SystemStackOverflowException has 0 parents
 120cd2dc MemoryMappedViewAccessor has 2 parents
 ");
@@ -353,7 +354,7 @@ Inverted Dictionary
                  36197924
  120cd2dc MemoryMappedViewAccessor has 2 parents
    120cd2dc
-# dict entries = 1223023
+# dictObjRef = 1223023
 ");
         }
         private async Task<List<uint>> DoQueryForParents(OutOfProc oop, uint objIdLeaf, string desc)
@@ -630,7 +631,7 @@ IntPtr.Size = 8 Creating Shared Memory region
         }
 
         [TestMethod]
-        public async Task OOPTestUnion()
+        public async Task OOPTestSendObjsAndTypes()
         {
             var cts = new CancellationTokenSource();
             using (var oop = new OutOfProc(
@@ -657,21 +658,7 @@ IntPtr.Size = 8 Creating Shared Memory region
                         await oop.ConnectToServerAsync(cts.Token);
                         var sharedRegionChunkSize = 1 * 65536u;
                         await oop.ClientSendVerb(Verbs.CreateSharedMemSection, sharedRegionChunkSize);
-
-                        unsafe
-                        {
-//                            var bufs = new MemBuf[1]; // https://www.iobservable.net/blog/2013/08/06/clr-limitations/
-                            var x = new MemBufChunk();
-                            for (uint i = 0; i < 10; i++)
-                            {
-                                x.UInts[i] = i;
-                            }
-                            for (int i = 0; i < 4; i++)
-                            {
-                                var b = x.Bytes[i];
-                                Trace.WriteLine($"Read back {i} {b}");
-                            }
-                        }
+                        await SendObjectsAndTypesAsync(new ClrUtil(), oop);
 
                         Trace.WriteLine($"Server Logs: " + await oop.ClientSendVerb(Verbs.GetLog, null));
                         Trace.WriteLine("Client: sending quit");
@@ -698,6 +685,149 @@ IntPtr.Size = 8 Creating Shared Memory region
                     await oop.DoServerLoopTask;
                     Assert.IsTrue(oop.DoServerLoopTask.IsCompleted);
                 }
+            }
+        }
+        internal async Task SendObjectsAndTypesAsync(ClrUtil clrUtil, OutOfProc outOfProc)
+        {
+            uint typeIdNext = 0;
+            var bufChunkSize = outOfProc._sharedMapSize - 8; // room for null term
+            var numChunksSent = 0;
+            var numObjs = 0;
+            int ndxbufChunk = 0; // count of UINTs
+            //Dictionary<uint, ClrType> dictTypeIdToClrType = new Dictionary<uint, ClrType>();  // client side: TypeId to ClrType
+            Dictionary<ClrType, uint> dictClrTypeToTypeId = new Dictionary<ClrType, uint>();  // client side: ClrType to TypeId
+            async Task AddObjAsync(uint obj, ClrType type)
+            {
+                if (!dictClrTypeToTypeId.TryGetValue(type, out var typeId))
+                {
+                    typeIdNext++;
+                    typeId = typeIdNext;
+                    dictClrTypeToTypeId[type] = typeId;
+                    //dictTypeIdToClrType[typeId] = type;
+                }
+                // now we send the pair objaddr, typeId as series of 2 UINTs = 8 bytes. We compare byte count: 4 * # Uints
+                if (4 * ndxbufChunk >= bufChunkSize)
+                {
+                    await SendBufferAsync(Verbs.SendObjAndTypeIdInChunks);
+                    ndxbufChunk = 0;
+                }
+                unsafe
+                {
+                    var ptr = (uint*)outOfProc._MemoryMappedRegionAddress;
+                    ptr[ndxbufChunk++] = obj;
+                    ptr[ndxbufChunk++] = typeId;
+                }
+                numObjs++;
+            }
+            foreach (var objAddr in clrUtil._heap.EnumerateObjectAddresses())
+            {
+                ClrType type = null;
+                try
+                {
+                    type = clrUtil._heap.GetObjectType(objAddr);
+                }
+                catch (Exception ex)
+                {
+                    //                    clrUtil.LogString("Enumobjs Got exception {0} {1}", objAddr, ex.ToString());
+                    clrUtil.LogString(ex.ToString());
+                }
+                if (type != null) // corrupt heap can cause null
+                {
+                    await AddObjAsync((uint)objAddr, type);
+                }
+            }
+            foreach (var root in clrUtil._heap.EnumerateRoots(enumerateStatics: true)) // could yield dupes
+            {
+                await AddObjAsync((uint)root.Object, root.Type);
+            }
+            // now we send leftover chunk as series of 2 UINTs
+            await SendBufferAsync(Verbs.SendObjAndTypeIdInChunks);
+            Trace.WriteLine($"Client sent # objs= {numObjs} # chunks = {numChunksSent}");
+            // now we send type names and Ids as series of UINT ID, UINT nameLen, byte[namelen]
+            var numTypes = 0;
+            numChunksSent = 0;
+            ndxbufChunk = 0;
+            foreach (var itm in dictClrTypeToTypeId)
+            {
+                var strTypeNameBytes = Encoding.ASCII.GetBytes(itm.Key.TypeName);
+                var numBytesRequired = 4 + 4 + strTypeNameBytes.Length; // id, len, strbytes
+                if (4 * ndxbufChunk + numBytesRequired >= bufChunkSize)
+                {
+                    await SendBufferAsync(Verbs.SendTypeIdAndTypeNameInChunks);
+                    ndxbufChunk = 0;
+                    if (numBytesRequired > bufChunkSize)
+                    {
+                        throw new InvalidOperationException($"Type name too big");
+                    }
+                }
+                unsafe
+                {
+                    var ptr = (uint*)outOfProc._MemoryMappedRegionAddress;
+                    ptr[ndxbufChunk++] = itm.Value; // the typeId
+                    ptr[ndxbufChunk++] = (uint)strTypeNameBytes.Length;
+                    Marshal.Copy(strTypeNameBytes, 0, outOfProc._MemoryMappedRegionAddress + ndxbufChunk * 4, strTypeNameBytes.Length);
+                    var bCount = 4 * ((strTypeNameBytes.Length + 3) / 4); // round up to nearest 4;
+                    ndxbufChunk += bCount / 4;// so we can continue to index by UINT
+                    numTypes++;
+                }
+            }
+            // send leftovers
+            await SendBufferAsync(Verbs.SendTypeIdAndTypeNameInChunks);
+            // now that we've sent all the data, let the server know and calculate the various data structures required
+            await outOfProc.ClientSendVerb(Verbs.ObjsAndTypesDone, 0);
+            async Task SendBufferAsync(Verbs verb)
+            {
+                unsafe
+                {
+                    var ptr = (uint*)outOfProc._MemoryMappedRegionAddress;
+                    ptr[ndxbufChunk++] = 0; //null term
+                }
+                await outOfProc.ClientSendVerb(verb, 0);
+                numChunksSent++;
+            }
+        }
+        public class ClrUtil
+        {
+            public void LogString(string s)
+            {
+                Trace.WriteLine(s);
+            }
+            public class ClrHeap
+            {
+                public class root
+                {
+                    public uint Object;
+                    public ClrType Type;
+                }
+                internal IEnumerable<uint> EnumerateObjectAddresses()
+                {
+                    for (uint i = 1; i < 1000000; i++)
+                    {
+                        yield return i;
+                    }
+                }
+
+                internal ClrType GetObjectType(uint objAddr)
+                {
+                    return new ClrType() { TypeName = $"ClrType {objAddr % 710}" };
+                }
+
+                internal IEnumerable<root> EnumerateRoots(bool enumerateStatics)
+                {
+                    for (uint i = 0; i < 100; i++)
+                    {
+                        yield return new root() { Object = i + 2000000u, Type = new ClrType() { TypeName = $"root{i}" } };
+                    }
+                }
+            }
+            public ClrHeap _heap = new ClrHeap();
+        }
+        public class ClrType
+        {
+            public string TypeName;
+            public override string ToString()
+            {
+                return TypeName;
             }
         }
 

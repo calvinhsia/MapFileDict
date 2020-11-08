@@ -28,6 +28,8 @@ namespace MapFileDict
         DoSpeedTest,
         verbRequestData, // for testing
         DoMessageBox,   // for testing
+        SendObjAndTypeIdInChunks,
+        SendTypeIdAndTypeNameInChunks,
         SendObjAndReferences, // a single obj and a list of it's references
         SendObjAndReferencesInChunks, // yields perf gains: from 5k objs/sec to 1M/sec
         CreateInvertedDictionary, // Create an inverte dict. From the dict of Obj=> list of child objs ref'd by the obj, it creates a new
@@ -35,13 +37,21 @@ namespace MapFileDict
                                   // very useful for finding: e.g. who holds a reference to FOO
         QueryParentOfObject, // given an obj, get a list of objs that reference it
         Delayms,
+        ObjsAndTypesDone,
     }
     public class OutOfProc : OutOfProcBase
     {
         public static uint ConnectionVersion = 2;
         public string LastError = string.Empty;
+
+        Dictionary<uint, string> dictTypeIdToTypeName = new Dictionary<uint, string>(); // typeId to TypeName
+        Dictionary<uint, uint> dictObjToTypeId = new Dictionary<uint, uint>();
+        //Dictionary<uint, string> dictObjToType = new Dictionary<uint, string>(); // from objId to TypeName
+        Dictionary<string, List<uint>> dictTypeToObjList = new Dictionary<string, List<uint>>(); // TypeName to List<objs>
+
         Dictionary<uint, List<uint>> dictObjRef = new Dictionary<uint, List<uint>>();
         Dictionary<uint, List<uint>> dictInverted = null;
+
         public OutOfProc()
         {
             AddVerbs();
@@ -122,7 +132,10 @@ namespace MapFileDict
                  },
                  actServerDoVerb: async (arg) =>
                  {
-                     Trace.WriteLine($"# dict entries = {dictObjRef.Count}");
+                     if (ClientAndServerInSameProcess) // if same process, GetLog from server not called
+                     {
+                         Trace.WriteLine($"#dictObjToTypeId = {dictObjToTypeId.Count}  # dictObjRef = {dictObjRef.Count}");
+                     }
                      await PipeFromServer.WriteAcknowledgeAsync();
                      return Verbs.ServerQuit; // tell the server loop to quit
                  });
@@ -140,7 +153,7 @@ namespace MapFileDict
                     var strlog = string.Empty;
                     if (mylistener != null)
                     {
-                        Trace.WriteLine($"# dict entries = {dictObjRef.Count}");
+                        Trace.WriteLine($"#dictObjToTypeId = {dictObjToTypeId.Count}  # dictObjRef = {dictObjRef.Count}");
                         Trace.WriteLine($"Server: Getlog #entries = {mylistener.lstLoggedStrings.Count}");
                         strlog = string.Join("\r\n   ", mylistener.lstLoggedStrings);
                         mylistener.lstLoggedStrings.Clear();
@@ -318,6 +331,73 @@ namespace MapFileDict
                     return null;
                 });
 
+
+            AddVerb(Verbs.SendObjAndTypeIdInChunks,
+                actClientSendVerb: async (arg) =>
+                {
+                    await PipeFromClient.WriteVerbAsync(Verbs.SendObjAndTypeIdInChunks);
+                    await PipeFromClient.ReadAcknowledgeAsync();
+                    return null;
+                },
+                actServerDoVerb: async (arg) =>
+                {
+                    await PipeFromServer.WriteAcknowledgeAsync();
+                    var bufNdx = 0;
+                    unsafe
+                    {
+                        var ptr = (uint*)_MemoryMappedRegionAddress;
+                        while (true)
+                        {
+                            var obj = ptr[bufNdx++];
+                            if (obj == 0)
+                            {
+                                break;
+                            }
+                            var typeId = ptr[bufNdx++];
+                            dictObjToTypeId[obj] = typeId;
+                        }
+                    }
+                    await PipeFromServer.WriteAcknowledgeAsync();
+                    //                    Trace.WriteLine($"server got {dictObjToTypeId.Count}");
+                    return null;
+                });
+
+            AddVerb(Verbs.SendTypeIdAndTypeNameInChunks,
+                actClientSendVerb: async (arg) =>
+                {
+                    await PipeFromClient.WriteVerbAsync(Verbs.SendTypeIdAndTypeNameInChunks);
+                    await PipeFromClient.ReadAcknowledgeAsync();
+                    return null;
+                },
+                actServerDoVerb: async (arg) =>
+                {
+                    await PipeFromServer.WriteAcknowledgeAsync();
+                    var bufNdx = 0;
+                    unsafe
+                    {
+                        var ptr = (uint*)_MemoryMappedRegionAddress;
+                        while (true)
+                        {
+                            var typeId = ptr[bufNdx++];
+                            if (typeId == 0)
+                            {
+                                break;
+                            }
+                            var typeNameLen = ptr[bufNdx++];
+                            var typeName = Marshal.PtrToStringAnsi(_MemoryMappedRegionAddress + bufNdx * 4, (int)typeNameLen);
+                            var bCount = 4 * ((typeName.Length + 3) / 4); // round up to nearest 4;
+                            bufNdx += bCount / 4;// so we can continue to index by UINT
+
+                            dictTypeIdToTypeName[typeId] = typeName;
+                        }
+                    }
+                    await PipeFromServer.WriteAcknowledgeAsync();
+                    //                    Trace.WriteLine($"server got {dictObjToTypeId.Count}");
+                    return null;
+                });
+
+
+
             //Need to send 10s of millions of objs: sending in chunks is much faster than one at a time.
             AddVerb(Verbs.SendObjAndReferencesInChunks,
                 actClientSendVerb: async (arg) =>
@@ -355,6 +435,19 @@ namespace MapFileDict
                     await PipeFromServer.WriteAcknowledgeAsync();
                     return null;
                 });
+            AddVerb(Verbs.ObjsAndTypesDone,
+                actClientSendVerb: async (arg) =>
+                {
+                    await PipeFromClient.WriteVerbAsync(Verbs.ObjsAndTypesDone);
+                    return null;
+                },
+                actServerDoVerb: async (arg) =>
+                {
+                    ProcessSentObjects();
+                    await PipeFromServer.WriteAcknowledgeAsync();
+                    return null;
+                });
+
 
             AddVerb(Verbs.CreateInvertedDictionary,
                 actClientSendVerb: async (arg) =>
@@ -441,12 +534,7 @@ namespace MapFileDict
                 {
                     if (4 * ndxbufChunk + numBytesForThisObj >= bufChunkSize) // too big for cur buf?
                     {
-                        unsafe
-                        {
-                            var ptr = (uint*)_MemoryMappedRegionAddress;
-                            ptr[ndxbufChunk++] = 0; //null term
-                        }
-                        await ClientSendVerb(Verbs.SendObjAndReferencesInChunks, ndxbufChunk);
+                        await SendBufferAsync();
                         ndxbufChunk = 0;
                     }
                     unsafe
@@ -464,6 +552,10 @@ namespace MapFileDict
             if (ndxbufChunk > 0) // leftovers
             {
                 Trace.WriteLine($"Client: send leftovers {ndxbufChunk}");
+                await SendBufferAsync();
+            }
+            async Task SendBufferAsync()
+            {
                 unsafe
                 {
                     var ptr = (uint*)_MemoryMappedRegionAddress;
@@ -508,6 +600,20 @@ namespace MapFileDict
             }
 
             return dictInvert;
+        }
+        public void ProcessSentObjects()
+        {
+            foreach (var objToTypeItem in dictObjToTypeId)
+            {
+                var typeName = dictTypeIdToTypeName[objToTypeItem.Value];
+                if (!dictTypeToObjList.TryGetValue(typeName, out var lstObjs))
+                {
+                    lstObjs = new List<uint>();
+                    dictTypeToObjList[typeName] = lstObjs;
+                }
+                lstObjs.Add(objToTypeItem.Key);
+            }
+            Trace.WriteLine($"Server has dictTypeToObjList {dictTypeToObjList.Count}");
         }
     }
 }
