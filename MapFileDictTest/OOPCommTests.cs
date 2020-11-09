@@ -15,7 +15,7 @@ namespace MapFileDictTest
     [TestClass]
     public class OOPCommTests : MyTestBase
     {
-        string fnameObjectGraph = @"c:\users\calvinh\Desktop\ObjGraph.txt"; // 2.1Megs from "VSDbgData\VSDbgTestDumps\MSSln22611\MSSln22611.dmp
+        string fnameObjectRefGraph = @"c:\users\calvinh\Desktop\ObjGraph.txt"; // 2.1Megs from "VSDbgData\VSDbgTestDumps\MSSln22611\MSSln22611.dmp
         uint WpfTextView = 0x362b72e0;
         uint MemoryMappedViewAccessor = 0x120cd2dc; //120cd2dc  System.IO.MemoryMappedFiles.MemoryMappedViewAccessor
         uint SystemStackOverflowException = 0x034610b4;// System.StackOverflowException
@@ -36,7 +36,7 @@ Children of "-> builder = Microsoft.VisualStudio.Text.Implementation.BinaryStrin
         [TestMethod]
         public async Task OOPGetObjectGraph()
         {
-            var dictOGraph = await ReadObjectGraphAsync(fnameObjectGraph);
+            var dictOGraph = await ReadObjectRefGraphAsync(fnameObjectRefGraph);
 
             Dictionary<uint, List<uint>> dictInvert = OutOfProc.InvertDictionary(dictOGraph);
 
@@ -69,7 +69,7 @@ Parents of WpfTextView   362b72e0
 
         IEnumerable<Tuple<uint, List<uint>>> GetObjectGraphIEnumerable()
         {
-            using (var fs = new StreamReader(fnameObjectGraph))
+            using (var fs = new StreamReader(fnameObjectRefGraph))
             {
                 var hashset = new HashSet<uint>(); // EnumerateObjectReferences sometimes has duplicate children <sigh>
                 var curObjId = 0U;
@@ -96,7 +96,7 @@ Parents of WpfTextView   362b72e0
             }
         }
 
-        private async Task<Dictionary<uint, List<uint>>> ReadObjectGraphAsync(string fnameObjectGraph)
+        private async Task<Dictionary<uint, List<uint>>> ReadObjectRefGraphAsync(string fnameObjectGraph)
         {
             /*MSSln22611\MSSln22611.dmp
                         {
@@ -242,7 +242,7 @@ Children of "<- System.IO.MemoryMappedFiles.MemoryMappedViewAccessor  120cd2dc"
                     }
                 }
             }
-            Trace.WriteLine($"{nameof(ReadObjectGraphAsync)} Read {dictOGraph.Count:n0} objs. #Objs with at least 1 child = {nObjsWithAtLeastOneKid:n0}   TotalChildObjs = {nChildObjs:n0}");
+            Trace.WriteLine($"{nameof(ReadObjectRefGraphAsync)} Read {dictOGraph.Count:n0} objs. #Objs with at least 1 child = {nObjsWithAtLeastOneKid:n0}   TotalChildObjs = {nChildObjs:n0}");
             // 12 secs to read in graph Read 1,223,023 objs. #Objs with at least 1 child = 914,729   TotalChildObjs = 2,901,660
             return dictOGraph;
         }
@@ -255,13 +255,13 @@ Children of "<- System.IO.MemoryMappedFiles.MemoryMappedViewAccessor  120cd2dc"
                  {
                      var sw = Stopwatch.StartNew();
                      var ienumOGraph = GetObjectGraphIEnumerable();
-                     var tup = await oop.SendObjGraphEnumerableInChunksAsync(ienumOGraph);
+                     var tup = await oop.SendObjRefGraphEnumerableInChunksAsync(ienumOGraph);
                      int numObjs = tup.Item1;
                      var numChunksSent = tup.Item2;
                      // the timing includes parsing the text file for obj graph
                      Trace.WriteLine($"Sent {numObjs}  #Chunks = {numChunksSent} Objs/Sec = {numObjs / sw.Elapsed.TotalSeconds:n2}"); // 5k/sec
 
-                     await oop.ClientSendVerb(Verbs.CreateInvertedDictionary, null);
+                     await oop.ClientSendVerb(Verbs.CreateInvertedObjRefDictionary, null);
                      Trace.WriteLine($"Inverted Dictionary");
 
 
@@ -302,13 +302,13 @@ IntPtr.Size = 8 Creating Shared Memory region
 
                         var sw = Stopwatch.StartNew();
                         var ienumOGraph = GetObjectGraphIEnumerable();
-                        var tup = await oop.SendObjGraphEnumerableInChunksAsync(ienumOGraph);
+                        var tup = await oop.SendObjRefGraphEnumerableInChunksAsync(ienumOGraph);
                         int numObjs = tup.Item1;
                         var numChunksSent = tup.Item2;
                         // the timing includes parsing the text file for obj graph
                         Trace.WriteLine($"Sent {numObjs}  #Chunks = {numChunksSent} Objs/Sec = {numObjs / sw.Elapsed.TotalSeconds:n2}"); // 5k/sec
 
-                        await oop.ClientSendVerb(Verbs.CreateInvertedDictionary, null);
+                        await oop.ClientSendVerb(Verbs.CreateInvertedObjRefDictionary, null);
                         Trace.WriteLine($"Inverted Dictionary");
 
                         await DoQueryForParents(oop, SystemStackOverflowException, nameof(SystemStackOverflowException));
