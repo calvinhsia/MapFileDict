@@ -33,8 +33,8 @@ namespace MapFileDict
         SendObjAndReferences, // a single obj and a list of it's references
         SendObjAndReferencesInChunks, // yields perf gains: from 5k objs/sec to 1M/sec
         CreateInvertedObjRefDictionary, // Create an inverte dict. From the dict of Obj=> list of child objs ref'd by the obj, it creates a new
-                                  // dict containing every objid: for each is a list of parent objs (those that ref the original obj)
-                                  // very useful for finding: e.g. who holds a reference to FOO
+                                        // dict containing every objid: for each is a list of parent objs (those that ref the original obj)
+                                        // very useful for finding: e.g. who holds a reference to FOO
         QueryParentOfObject, // given an obj, get a list of objs that reference it
         Delayms,
         ObjsAndTypesDone,
@@ -42,10 +42,10 @@ namespace MapFileDict
     }
     public class OutOfProc : OutOfProcBase
     {
-        public static uint ConnectionVersion = 2;
+        public static uint ConnectionVersion = 1;
         public string LastError = string.Empty;
 
-        Dictionary<uint, string> dictTypeIdToTypeName = new Dictionary<uint, string>(); // typeId to TypeName
+        readonly Dictionary<uint, string> dictTypeIdToTypeName = new Dictionary<uint, string>(); // typeId to TypeName
         Dictionary<uint, uint> dictObjToTypeId = new Dictionary<uint, uint>();
         //Dictionary<uint, string> dictObjToType = new Dictionary<uint, string>(); // from objId to TypeName
         Dictionary<string, List<uint>> dictTypeToObjList = new Dictionary<string, List<uint>>(); // TypeName to List<objs>
@@ -53,6 +53,7 @@ namespace MapFileDict
         Dictionary<uint, List<uint>> dictObjToRefs = new Dictionary<uint, List<uint>>();
         Dictionary<uint, List<uint>> dictObjToParents = null;
         private Task taskProcessSentObjects;
+        private Task taskCreateInvertedObjRefDictionary;
 
         public OutOfProc()
         {
@@ -504,7 +505,11 @@ namespace MapFileDict
                 },
                 actServerDoVerb: async (arg) =>
                 {
-                    dictObjToParents = InvertDictionary(dictObjToRefs);
+                    this.taskCreateInvertedObjRefDictionary = new Task(async () =>
+                    {
+                        dictObjToParents = await InvertDictionaryAsync(dictObjToRefs);
+                    });
+                    this.taskCreateInvertedObjRefDictionary.Start();
                     await PipeFromServer.WriteAcknowledgeAsync();
                     return null;
                 });
@@ -530,6 +535,7 @@ namespace MapFileDict
                 {
                     await PipeFromServer.WriteAcknowledgeAsync();
                     var objQuery = await PipeFromServer.ReadUInt32();
+                    await this.taskCreateInvertedObjRefDictionary;
                     if (dictObjToParents.TryGetValue(objQuery, out var lstParents))
                     {
                         var numParents = lstParents?.Count;
@@ -611,7 +617,7 @@ namespace MapFileDict
             }
         }
 
-        public static Dictionary<uint, List<uint>> InvertDictionary(Dictionary<uint, List<uint>> dictOGraph)
+        public static Task<Dictionary<uint, List<uint>>> InvertDictionaryAsync(Dictionary<uint, List<uint>> dictOGraph)
         {
             var dictInvert = new Dictionary<uint, List<uint>>(capacity: dictOGraph.Count); // obj ->list of objs that reference it
                                                                                            // the result will be a dict of every object, with a value of a List of all the objects referring to it.
@@ -642,7 +648,7 @@ namespace MapFileDict
                     }
                 }
             }
-            return dictInvert;
+            return Task.FromResult(dictInvert);
         }
     }
 }

@@ -38,7 +38,7 @@ Children of "-> builder = Microsoft.VisualStudio.Text.Implementation.BinaryStrin
         {
             var dictOGraph = await ReadObjectRefGraphAsync(fnameObjectRefGraph);
 
-            Dictionary<uint, List<uint>> dictInvert = OutOfProc.InvertDictionary(dictOGraph);
+            Dictionary<uint, List<uint>> dictInvert = await OutOfProc.InvertDictionaryAsync(dictOGraph);
 
             Trace.WriteLine($"Inverted dict {dictInvert.Count:n0}"); // System.Object, String.Empty have the most parents: e.g. 0xaaaa
                                                                      //362b72e0  Microsoft.VisualStudio.Text.Editor.Implementation.WpfTextView   (
@@ -653,6 +653,7 @@ Server: Getlog #entries
                         }
                         await ShowObjsAsync("ClrType1");
                         await ShowObjsAsync("ClrType2");
+                        await ShowObjsAsync("NonExistentType");
                         Trace.WriteLine($"Server Logs: " + await oop.ClientSendVerb(Verbs.GetLog, null));
                         Trace.WriteLine("Client: sending quit");
                         await oop.ClientSendVerb(Verbs.ServerQuit, null);
@@ -686,6 +687,7 @@ ClrType1 000006af
 #Objs of ClrType2 5847
 ClrType2 00000002
 ClrType2 000006b0
+#Objs of NonExistentType 0
 ");
         }
         internal async Task SendObjectsAndTypesAsync(ClrUtil clrUtil, OutOfProc outOfProc)
@@ -755,7 +757,7 @@ ClrType2 000006b0
             ndxbufChunk = 0;
             foreach (var itm in dictClrTypeToTypeId)
             {
-                var strTypeNameBytes = Encoding.ASCII.GetBytes(itm.Key.TypeName);
+                var strTypeNameBytes = Encoding.ASCII.GetBytes(itm.Key.Name);
                 var numBytesRequired = 4 + 4 + strTypeNameBytes.Length; // id, len, strbytes
                 if (4 * ndxbufChunk + numBytesRequired >= bufChunkSize)
                 {
@@ -830,14 +832,14 @@ ClrType2 000006b0
 
                 internal ClrType GetObjectType(uint objAddr)
                 {
-                    return new ClrType() { TypeName = $"ClrType{objAddr % 1710}" };
+                    return new ClrType() { Name = $"ClrType{objAddr % 1710}" };
                 }
 
                 internal IEnumerable<root> EnumerateRoots(bool enumerateStatics)
                 {
                     for (uint i = 0; i < 1000; i++)
                     {
-                        yield return new root() { Object = i + 2000000u, Type = new ClrType() { TypeName = $"root{i}" } };
+                        yield return new root() { Object = i + 2000000u, Type = new ClrType() { Name = $"root{i}" } };
                     }
                 }
             }
@@ -845,10 +847,10 @@ ClrType2 000006b0
         }
         public class ClrType
         {
-            public string TypeName;
+            public string Name;
             public override string ToString()
             {
-                return TypeName;
+                return Name;
             }
         }
 
