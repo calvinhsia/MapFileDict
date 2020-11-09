@@ -38,6 +38,7 @@ namespace MapFileDict
         QueryParentOfObject, // given an obj, get a list of objs that reference it
         Delayms,
         ObjsAndTypesDone,
+        GetObjsOfType,
     }
     public class OutOfProc : OutOfProcBase
     {
@@ -51,6 +52,7 @@ namespace MapFileDict
 
         Dictionary<uint, List<uint>> dictObjRef = new Dictionary<uint, List<uint>>();
         Dictionary<uint, List<uint>> dictInverted = null;
+        private Task taskProcessSentObjects;
 
         public OutOfProc()
         {
@@ -443,11 +445,44 @@ namespace MapFileDict
                 },
                 actServerDoVerb: async (arg) =>
                 {
-                    ProcessSentObjects();
+                    this.taskProcessSentObjects = ProcessSentObjects();
                     await PipeFromServer.WriteAcknowledgeAsync();
                     return null;
                 });
 
+
+            AddVerb(Verbs.GetObjsOfType,
+                actClientSendVerb: async (arg) =>
+                {
+                    await PipeFromClient.WriteVerbAsync(Verbs.GetObjsOfType);
+                    await PipeFromClient.WriteStringAsAsciiAsync(arg as string);
+                    var lstObjs = new List<uint>();
+                    while (true)
+                    {
+                        var obj = await PipeFromClient.ReadUInt32();
+                        if (obj == 0)
+                        {
+                            break;
+                        }
+                        lstObjs.Add(obj);
+                    }
+                    return lstObjs;
+                },
+                actServerDoVerb: async (arg) =>
+                {
+                    await PipeFromServer.WriteAcknowledgeAsync();
+                    var strType = await PipeFromServer.ReadStringAsAsciiAsync();
+                    await taskProcessSentObjects;
+                    if (dictTypeToObjList.TryGetValue(strType, out var lstObjs))
+                    {
+                        foreach (var obj in lstObjs)
+                        {
+                            await PipeFromServer.WriteUInt32(obj);
+                        }
+                    }
+                    await PipeFromServer.WriteUInt32(0); // terminator
+                    return null;
+                });
 
             AddVerb(Verbs.CreateInvertedDictionary,
                 actClientSendVerb: async (arg) =>
@@ -461,7 +496,6 @@ namespace MapFileDict
                     await PipeFromServer.WriteAcknowledgeAsync();
                     return null;
                 });
-
 
             AddVerb(Verbs.QueryParentOfObject,
                 actClientSendVerb: async (arg) =>
@@ -596,22 +630,26 @@ namespace MapFileDict
                     }
                 }
             }
-
             return dictInvert;
         }
-        public void ProcessSentObjects()
+        public Task ProcessSentObjects()
         {
-            foreach (var objToTypeItem in dictObjToTypeId)
+            var tsk = new Task(() =>
             {
-                var typeName = dictTypeIdToTypeName[objToTypeItem.Value];
-                if (!dictTypeToObjList.TryGetValue(typeName, out var lstObjs))
+                foreach (var objToTypeItem in dictObjToTypeId)
                 {
-                    lstObjs = new List<uint>();
-                    dictTypeToObjList[typeName] = lstObjs;
+                    var typeName = dictTypeIdToTypeName[objToTypeItem.Value];
+                    if (!dictTypeToObjList.TryGetValue(typeName, out var lstObjs))
+                    {
+                        lstObjs = new List<uint>();
+                        dictTypeToObjList[typeName] = lstObjs;
+                    }
+                    lstObjs.Add(objToTypeItem.Key);
                 }
-                lstObjs.Add(objToTypeItem.Key);
-            }
-            Trace.WriteLine($"Server has dictTypeToObjList {dictTypeToObjList.Count}");
+                Trace.WriteLine($"Server has dictTypeToObjList {dictTypeToObjList.Count}");
+            });
+            tsk.Start();
+            return tsk;
         }
     }
 }

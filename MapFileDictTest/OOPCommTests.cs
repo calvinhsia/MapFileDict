@@ -636,8 +636,23 @@ Server: Getlog #entries
                     try
                     {
                         await oop.ConnectToServerAsync(cts.Token);
-                        await SendObjectsAndTypesAsync(new ClrUtil(), oop);
+                        var numObjsToSend = 1000 * 1000 * 10;
+//                        numObjsToSend = 10;
+                        var sw = Stopwatch.StartNew();
+                        await SendObjectsAndTypesAsync(new ClrUtil(numObjsToSend), oop);
+                        Trace.WriteLine($"Sent {numObjsToSend:n0}  Objs/Sec = {numObjsToSend / sw.Elapsed.TotalSeconds:n2}"); // 5k/sec
+                        async Task ShowObjsAsync(string typeName)
+                        {
+                            var lstObjs = (List<uint>)await oop.ClientSendVerb(Verbs.GetObjsOfType, typeName);
+                            Trace.WriteLine($"#Objs of {typeName} {lstObjs.Count}");
 
+                            foreach (var obj in lstObjs.Take(5))
+                            {
+                                Trace.WriteLine($"  {typeName} {obj:x8}");
+                            }
+                        }
+                        await ShowObjsAsync("ClrType1");
+                        await ShowObjsAsync("ClrType2");
                         Trace.WriteLine($"Server Logs: " + await oop.ClientSendVerb(Verbs.GetLog, null));
                         Trace.WriteLine("Client: sending quit");
                         await oop.ClientSendVerb(Verbs.ServerQuit, null);
@@ -664,6 +679,14 @@ Server: Getlog #entries
                     Assert.IsTrue(oop.DoServerLoopTask.IsCompleted);
                 }
             }
+            VerifyLogStrings(@"
+#Objs of ClrType1 5847
+ClrType1 00000001
+ClrType1 000006af
+#Objs of ClrType2 5847
+ClrType2 00000002
+ClrType2 000006b0
+");
         }
         internal async Task SendObjectsAndTypesAsync(ClrUtil clrUtil, OutOfProc outOfProc)
         {
@@ -721,7 +744,7 @@ Server: Getlog #entries
             }
             // now we send leftover chunk as series of 2 UINTs
             await SendBufferAsync(Verbs.SendObjAndTypeIdInChunks);
-            Trace.WriteLine($"Client sent # objs= {numObjs} # chunks = {numChunksSent}");
+            Trace.WriteLine($"Client sent # objs= {numObjs:n0} # chunks = {numChunksSent}");
             // now we send type names and Ids as series of UINT ID, UINT nameLen, byte[namelen]
             var numTypes = 0;
             numChunksSent = 0;
@@ -755,6 +778,7 @@ Server: Getlog #entries
             // now that we've sent all the data, let the server know and calculate the various data structures required
             await outOfProc.ClientSendVerb(Verbs.CloseSharedMemSection, 0);
             await outOfProc.ClientSendVerb(Verbs.ObjsAndTypesDone, 0);
+
             async Task SendBufferAsync(Verbs verb)
             {
                 unsafe
@@ -768,12 +792,23 @@ Server: Getlog #entries
         }
         public class ClrUtil
         {
+            public ClrUtil(int numObjsToSend)
+            {
+                _heap = new ClrHeap(numObjsToSend);
+            }
             public void LogString(string s)
             {
                 Trace.WriteLine(s);
             }
             public class ClrHeap
             {
+                private int numObjsToSend;
+
+                public ClrHeap(int numObjsToSend)
+                {
+                    this.numObjsToSend = numObjsToSend;
+                }
+
                 public class root
                 {
                     public uint Object;
@@ -781,7 +816,7 @@ Server: Getlog #entries
                 }
                 internal IEnumerable<uint> EnumerateObjectAddresses()
                 {
-                    for (uint i = 1; i < 1000000; i++)
+                    for (uint i = 1; i < numObjsToSend; i++)
                     {
                         yield return i;
                     }
@@ -789,18 +824,18 @@ Server: Getlog #entries
 
                 internal ClrType GetObjectType(uint objAddr)
                 {
-                    return new ClrType() { TypeName = $"ClrType {objAddr % 710}" };
+                    return new ClrType() { TypeName = $"ClrType{objAddr % 1710}" };
                 }
 
                 internal IEnumerable<root> EnumerateRoots(bool enumerateStatics)
                 {
-                    for (uint i = 0; i < 100; i++)
+                    for (uint i = 0; i < 1000; i++)
                     {
                         yield return new root() { Object = i + 2000000u, Type = new ClrType() { TypeName = $"root{i}" } };
                     }
                 }
             }
-            public ClrHeap _heap = new ClrHeap();
+            public ClrHeap _heap;
         }
         public class ClrType
         {
