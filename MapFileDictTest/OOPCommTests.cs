@@ -637,7 +637,7 @@ Server: Getlog #entries
                     {
                         await oop.ConnectToServerAsync(cts.Token);
                         var numObjsToSend = 1000 * 1000 * 10;
-//                        numObjsToSend = 10;
+                        //                        numObjsToSend = 10;
                         var sw = Stopwatch.StartNew();
                         await SendObjectsAndTypesAsync(new ClrUtil(numObjsToSend), oop);
                         Trace.WriteLine($"Sent {numObjsToSend:n0}  Objs/Sec = {numObjsToSend / sw.Elapsed.TotalSeconds:n2}"); // 5k/sec
@@ -696,7 +696,6 @@ ClrType2 000006b0
             var numChunksSent = 0;
             var numObjs = 0;
             int ndxbufChunk = 0; // count of UINTs
-            //Dictionary<uint, ClrType> dictTypeIdToClrType = new Dictionary<uint, ClrType>();  // client side: TypeId to ClrType
             Dictionary<ClrType, uint> dictClrTypeToTypeId = new Dictionary<ClrType, uint>();  // client side: ClrType to TypeId
             async Task AddObjAsync(uint obj, ClrType type)
             {
@@ -705,14 +704,13 @@ ClrType2 000006b0
                     typeIdNext++;
                     typeId = typeIdNext;
                     dictClrTypeToTypeId[type] = typeId;
-                    //dictTypeIdToClrType[typeId] = type;
                 }
-                // now we send the pair objaddr, typeId as series of 2 UINTs = 8 bytes. We compare byte count: 4 * # Uints
                 if (4 * ndxbufChunk >= bufChunkSize)
                 {
                     await SendBufferAsync(Verbs.SendObjAndTypeIdInChunks);
                     ndxbufChunk = 0;
                 }
+                // now we send the pair objaddr, typeId as series of 2 UINTs = 8 bytes. We compare byte count: 4 * # Uints
                 unsafe
                 {
                     var ptr = (uint*)outOfProc._MemoryMappedRegionAddress;
@@ -740,10 +738,16 @@ ClrType2 000006b0
             }
             foreach (var root in clrUtil._heap.EnumerateRoots(enumerateStatics: true)) // could yield dupes
             {
-                await AddObjAsync((uint)root.Object, root.Type);
+                if (root.Type != null)
+                {
+                    await AddObjAsync((uint)root.Object, root.Type);
+                }
             }
-            // now we send leftover chunk as series of 2 UINTs
-            await SendBufferAsync(Verbs.SendObjAndTypeIdInChunks);
+            // now we send leftover chunk
+            if (ndxbufChunk > 0)
+            {
+                await SendBufferAsync(Verbs.SendObjAndTypeIdInChunks);
+            }
             Trace.WriteLine($"Client sent # objs= {numObjs:n0} # chunks = {numChunksSent}");
             // now we send type names and Ids as series of UINT ID, UINT nameLen, byte[namelen]
             var numTypes = 0;
@@ -768,13 +772,15 @@ ClrType2 000006b0
                     ptr[ndxbufChunk++] = itm.Value; // the typeId
                     ptr[ndxbufChunk++] = (uint)strTypeNameBytes.Length;
                     Marshal.Copy(strTypeNameBytes, 0, outOfProc._MemoryMappedRegionAddress + ndxbufChunk * 4, strTypeNameBytes.Length);
-                    var bCount = 4 * ((strTypeNameBytes.Length + 3) / 4); // round up to nearest 4;
-                    ndxbufChunk += bCount / 4;// so we can continue to index by UINT
+                    ndxbufChunk += ((strTypeNameBytes.Length + 3) / 4);//round up to nearest 4 so we can continue to index by UINT
                     numTypes++;
                 }
             }
             // send leftovers
-            await SendBufferAsync(Verbs.SendTypeIdAndTypeNameInChunks);
+            if (ndxbufChunk > 0)
+            {
+                await SendBufferAsync(Verbs.SendTypeIdAndTypeNameInChunks);
+            }
             // now that we've sent all the data, let the server know and calculate the various data structures required
             await outOfProc.ClientSendVerb(Verbs.CloseSharedMemSection, 0);
             await outOfProc.ClientSendVerb(Verbs.ObjsAndTypesDone, 0);

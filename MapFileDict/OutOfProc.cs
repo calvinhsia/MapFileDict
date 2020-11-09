@@ -385,11 +385,9 @@ namespace MapFileDict
                             {
                                 break;
                             }
-                            var typeNameLen = ptr[bufNdx++];
-                            var typeName = Marshal.PtrToStringAnsi(_MemoryMappedRegionAddress + bufNdx * 4, (int)typeNameLen);
-                            var bCount = 4 * ((typeName.Length + 3) / 4); // round up to nearest 4;
-                            bufNdx += bCount / 4;// so we can continue to index by UINT
-
+                            var typeNameLen = (int)ptr[bufNdx++];
+                            var typeName = Marshal.PtrToStringAnsi(_MemoryMappedRegionAddress + bufNdx * 4, typeNameLen);
+                            bufNdx += ((typeNameLen + 3) / 4);//round up to nearest 4 so we can continue to index by UINT
                             dictTypeIdToTypeName[typeId] = typeName;
                         }
                     }
@@ -398,6 +396,33 @@ namespace MapFileDict
                     return null;
                 });
 
+            AddVerb(Verbs.ObjsAndTypesDone,
+                actClientSendVerb: async (arg) =>
+                {
+                    await PipeFromClient.WriteVerbAsync(Verbs.ObjsAndTypesDone);
+                    return null;
+                },
+                actServerDoVerb: async (arg) =>
+                {
+                    this.taskProcessSentObjects = new Task(() =>
+                    {
+                        foreach (var objToTypeItem in dictObjToTypeId)
+                        {
+                            var typeName = dictTypeIdToTypeName[objToTypeItem.Value];
+                            if (!dictTypeToObjList.TryGetValue(typeName, out var lstObjs))
+                            {
+                                lstObjs = new List<uint>();
+                                dictTypeToObjList[typeName] = lstObjs;
+                            }
+                            lstObjs.Add(objToTypeItem.Key);
+                        }
+                        Trace.WriteLine($"Server has dictTypeToObjList {dictTypeToObjList.Count}");
+                    });
+                    this.taskProcessSentObjects.Start();
+
+                    await PipeFromServer.WriteAcknowledgeAsync();
+                    return null;
+                });
 
 
             //Need to send 10s of millions of objs: sending in chunks is much faster than one at a time.
@@ -437,34 +462,6 @@ namespace MapFileDict
                     await PipeFromServer.WriteAcknowledgeAsync();
                     return null;
                 });
-            AddVerb(Verbs.ObjsAndTypesDone,
-                actClientSendVerb: async (arg) =>
-                {
-                    await PipeFromClient.WriteVerbAsync(Verbs.ObjsAndTypesDone);
-                    return null;
-                },
-                actServerDoVerb: async (arg) =>
-                {
-                    this.taskProcessSentObjects =new Task(() =>
-                        {
-                            foreach (var objToTypeItem in dictObjToTypeId)
-                            {
-                                var typeName = dictTypeIdToTypeName[objToTypeItem.Value];
-                                if (!dictTypeToObjList.TryGetValue(typeName, out var lstObjs))
-                                {
-                                    lstObjs = new List<uint>();
-                                    dictTypeToObjList[typeName] = lstObjs;
-                                }
-                                lstObjs.Add(objToTypeItem.Key);
-                            }
-                            Trace.WriteLine($"Server has dictTypeToObjList {dictTypeToObjList.Count}");
-                        });
-                    this.taskProcessSentObjects.Start();
-
-                    await PipeFromServer.WriteAcknowledgeAsync();
-                    return null;
-                });
-
 
             AddVerb(Verbs.GetObjsOfType,
                 actClientSendVerb: async (arg) =>
