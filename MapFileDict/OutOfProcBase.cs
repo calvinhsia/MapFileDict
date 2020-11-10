@@ -231,7 +231,7 @@ namespace MapFileDict
                                 var verb = (Verbs)PipeFromServer.ReadByte(); // when reading verb, we don't want timeout because client initiated calls can occur any time
                                 if (_dictVerbs.ContainsKey(verb))
                                 {
-                                    var res = await ServerDoVerb(verb, null);
+                                    var res = await ServerDoVerbAsync(verb, null);
                                     if (res is Verbs)
                                     {
                                         if ((Verbs)res == Verbs.ServerQuit)
@@ -336,11 +336,11 @@ namespace MapFileDict
                 actionServerDoVerb = actServerDoVerb
             });
         }
-        public Task<object> ClientSendVerb(Verbs verb, object parm)
+        public Task<object> ClientSendVerbAsync(Verbs verb, object parm)
         {
             return _dictVerbs[verb].actionClientSendVerb(parm);
         }
-        public Task<object> ServerDoVerb(Verbs verb, object parm)
+        public Task<object> ServerDoVerbAsync(Verbs verb, object parm)
         {
             return _dictVerbs[verb].actionServerDoVerb(parm);
         }
@@ -602,20 +602,28 @@ namespace MapFileDict
         }
         public static async Task WriteStringAsAsciiAsync(this PipeStream pipe, string str)
         {
-            PipeMsgTraceWriteline($"{nameof(WriteStringAsAsciiAsync)} Write len {str.Length}");
-            await pipe.WriteUInt32((uint)str.Length);
-            var byts = Encoding.ASCII.GetBytes(str);
-            PipeMsgTraceWriteline($"{nameof(WriteStringAsAsciiAsync)} Write bytes {byts.Length}");
-            await pipe.WriteAsync(byts, 0, byts.Length);
+            var strlen = string.IsNullOrEmpty(str) ? 0 : str.Length;
+            PipeMsgTraceWriteline($"{nameof(WriteStringAsAsciiAsync)} Write len {strlen}");
+            await pipe.WriteUInt32((uint)strlen);
+            if (strlen > 0)
+            {
+                var byts = Encoding.ASCII.GetBytes(str);
+                PipeMsgTraceWriteline($"{nameof(WriteStringAsAsciiAsync)} Write bytes {byts.Length}");
+                await pipe.WriteAsync(byts, 0, byts.Length);
+            }
         }
         public static async Task<string> ReadStringAsAsciiAsync(this PipeStream pipe)
         {
             PipeMsgTraceWriteline($"{nameof(ReadStringAsAsciiAsync)} Read len");
             var strlen = await pipe.ReadUInt32();
             PipeMsgTraceWriteline($"{nameof(ReadStringAsAsciiAsync)} Got len = {strlen}");
-            var bytes = new byte[strlen];
-            await pipe.ReadAsync(bytes, 0, (int)strlen);
-            var str = Encoding.ASCII.GetString(bytes);
+            var str = string.Empty;
+            if (strlen > 0)
+            {
+                var bytes = new byte[strlen];
+                await pipe.ReadAsync(bytes, 0, (int)strlen);
+                str = Encoding.ASCII.GetString(bytes);
+            }
             return str;
         }
     }

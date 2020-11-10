@@ -1,10 +1,12 @@
 ﻿using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO.Pipes;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -39,6 +41,8 @@ namespace MapFileDict
         Delayms,
         ObjsAndTypesDone,
         GetObjsOfType,
+        GetFirstType,
+        GetNextType,
     }
     public class OutOfProc : OutOfProcBase
     {
@@ -54,6 +58,8 @@ namespace MapFileDict
         Dictionary<uint, List<uint>> dictObjToParents = null;
         private Task taskProcessSentObjects;
         private Task taskCreateInvertedObjRefDictionary;
+        private Dictionary<string, List<uint>>.KeyCollection.Enumerator _enumeratorDictTypes;
+        private string _strRegExFilterTypes;
 
         public OutOfProc()
         {
@@ -69,10 +75,10 @@ namespace MapFileDict
         public async Task ConnectToServerAsync(CancellationToken token)
         {
             await PipeFromClient.ConnectAsync(token);
-            var errcode = (uint)await this.ClientSendVerb(Verbs.EstablishConnection, 0);
+            var errcode = (uint)await this.ClientSendVerbAsync(Verbs.EstablishConnection, 0);
             if (errcode != 0)
             {
-                var lastError = (string)await this.ClientSendVerb(Verbs.GetLastError, null);
+                var lastError = (string)await this.ClientSendVerbAsync(Verbs.GetLastError, null);
                 throw new Exception($"Error establishing connection to server " + lastError);
             }
         }
@@ -405,7 +411,7 @@ namespace MapFileDict
                 },
                 actServerDoVerb: async (arg) =>
                 {
-                    this.taskProcessSentObjects = new Task(() =>
+                    this.taskProcessSentObjects = Task.Run(() =>
                     {
                         foreach (var objToTypeItem in dictObjToTypeId)
                         {
@@ -419,12 +425,68 @@ namespace MapFileDict
                         }
                         Trace.WriteLine($"Server has dictTypeToObjList {dictTypeToObjList.Count}");
                     });
-                    this.taskProcessSentObjects.Start();
-
                     await PipeFromServer.WriteAcknowledgeAsync();
                     return null;
                 });
 
+            AddVerb(Verbs.GetFirstType,
+                actClientSendVerb: async (arg) =>
+                {
+                    await PipeFromClient.WriteVerbAsync(Verbs.GetFirstType);
+                    await PipeFromClient.WriteStringAsAsciiAsync(arg as string); // regexfilter
+                    var first = await PipeFromClient.ReadStringAsAsciiAsync();
+                    return first;
+                },
+                actServerDoVerb: async (arg) =>
+                {
+                    await PipeFromServer.WriteAcknowledgeAsync();
+                    _strRegExFilterTypes = await PipeFromServer.ReadStringAsAsciiAsync();
+                    _enumeratorDictTypes = dictTypeToObjList.Keys.GetEnumerator();
+                    var fGotOne = false;
+                    while (_enumeratorDictTypes.MoveNext())
+                    {
+                        var val = _enumeratorDictTypes.Current;
+                        if (string.IsNullOrEmpty(_strRegExFilterTypes) || Regex.IsMatch(val, _strRegExFilterTypes))
+                        {
+                            await PipeFromServer.WriteStringAsAsciiAsync(_enumeratorDictTypes.Current);
+                            fGotOne = true;
+                            break;
+                        }
+                    }
+                    if (!fGotOne)
+                    {
+                        await PipeFromServer.WriteStringAsAsciiAsync(string.Empty);
+                    }
+                    return null;
+                });
+
+            AddVerb(Verbs.GetNextType,
+                actClientSendVerb: async (arg) =>
+                {
+                    await PipeFromClient.WriteVerbAsync(Verbs.GetNextType);
+                    var next = await PipeFromClient.ReadStringAsAsciiAsync();
+                    return next;
+                },
+                actServerDoVerb: async (arg) =>
+                {
+                    await PipeFromServer.WriteAcknowledgeAsync();
+                    var fGotOne = false;
+                    while (_enumeratorDictTypes.MoveNext())
+                    {
+                        var val = _enumeratorDictTypes.Current;
+                        if (string.IsNullOrEmpty(_strRegExFilterTypes) || Regex.IsMatch(val, _strRegExFilterTypes))
+                        {
+                            await PipeFromServer.WriteStringAsAsciiAsync(_enumeratorDictTypes.Current);
+                            fGotOne = true;
+                            break;
+                        }
+                    }
+                    if (!fGotOne)
+                    {
+                        await PipeFromServer.WriteStringAsAsciiAsync(string.Empty);
+                    }
+                    return null;
+                });
 
             //Need to send 10s of millions of objs: sending in chunks is much faster than one at a time.
             AddVerb(Verbs.SendObjAndReferencesInChunks,
@@ -505,11 +567,10 @@ namespace MapFileDict
                 },
                 actServerDoVerb: async (arg) =>
                 {
-                    this.taskCreateInvertedObjRefDictionary = new Task(async () =>
+                    this.taskCreateInvertedObjRefDictionary = Task.Run(async () =>
                     {
                         dictObjToParents = await InvertDictionaryAsync(dictObjToRefs);
                     });
-                    this.taskCreateInvertedObjRefDictionary.Start();
                     await PipeFromServer.WriteAcknowledgeAsync();
                     return null;
                 });
@@ -559,7 +620,7 @@ namespace MapFileDict
         /// </summary>
         public async Task<Tuple<int, int>> SendObjRefGraphEnumerableInChunksAsync(IEnumerable<Tuple<uint, List<uint>>> ienumOGraph) // don't want to have dependency on ValueTuple
         {
-            await ClientSendVerb(Verbs.CreateSharedMemSection, 2 * MemMap.AllocationGranularity);
+            await ClientSendVerbAsync(Verbs.CreateSharedMemSection, 2 * MemMap.AllocationGranularity);
             // can't have unsafe in lambda or anon func
             var bufChunkSize = _sharedMapSize - 4;// leave extra room for null term
             int ndxbufChunk = 0;
@@ -576,7 +637,7 @@ namespace MapFileDict
                   // 0460eea0 Microsoft.CodeAnalysis.VisualBasic.Syntax.InternalSyntax.SyntaxNodeCache+Entry[]
                   // 049b90e0 Microsoft.CodeAnalysis.SyntaxNode[]
                     Trace.WriteLine($"The cur obj {tup.Item1:x8} size={numBytesForThisObj} is too big for chunk {bufChunkSize}: sending via non-chunk");
-                    await ClientSendVerb(Verbs.SendObjAndReferences, tup); // send it on it's own with a different verb
+                    await ClientSendVerbAsync(Verbs.SendObjAndReferences, tup); // send it on it's own with a different verb
                     numChunksSent++;
                 }
                 else
@@ -603,7 +664,7 @@ namespace MapFileDict
                 Trace.WriteLine($"Client: send leftovers {ndxbufChunk}");
                 await SendBufferAsync();
             }
-            await ClientSendVerb(Verbs.CloseSharedMemSection, 0);
+            await ClientSendVerbAsync(Verbs.CloseSharedMemSection, 0);
             return Tuple.Create<int, int>(numObjs, numChunksSent);
             async Task SendBufferAsync()
             {
@@ -612,7 +673,7 @@ namespace MapFileDict
                     var ptr = (uint*)_MemoryMappedRegionAddress;
                     ptr[ndxbufChunk++] = 0; //null term
                 }
-                await ClientSendVerb(Verbs.SendObjAndReferencesInChunks, ndxbufChunk);
+                await ClientSendVerbAsync(Verbs.SendObjAndReferencesInChunks, ndxbufChunk);
                 numChunksSent++;
             }
         }
@@ -649,6 +710,66 @@ namespace MapFileDict
                 }
             }
             return Task.FromResult(dictInvert);
+        }
+
+        public async Task<List<uint>> GetObjectsOfType(string typeName)
+        {
+            return (List<uint>)await ClientSendVerbAsync(Verbs.GetObjsOfType, typeName);
+        }
+    }
+    struct MyEnumerable<T> : IEnumerable<T>
+    {
+        internal string regexFilter;
+        internal OutOfProc _outOfProc;
+
+        public MyEnumerable(string regexFilter, OutOfProc outOfProc)
+        {
+            this.regexFilter = regexFilter;
+            this._outOfProc = outOfProc;
+        }
+
+        public IEnumerator<T> GetEnumerator()
+        {
+            var en = new MyEnumerator<T>(this);
+            return en;
+        }
+        IEnumerator IEnumerable.GetEnumerator()
+        {
+            var en = new MyEnumerator<T>(this);
+            return en;
+        }
+    }
+    internal class MyEnumerator<T> : IEnumerator<T>
+    {
+        private T _curValue = default(T);
+        private MyEnumerable<T> _myEnumerables;
+        int curIndx = -1;
+        public MyEnumerator(MyEnumerable<T> myEnumerables)
+        {
+            this._myEnumerables = myEnumerables;
+        }
+
+        public T Current => _curValue;
+
+        object IEnumerator.Current => _curValue;
+
+        public void Dispose()
+        {
+        }
+
+        public bool MoveNext()
+        {
+            var verb = curIndx == -1 ? Verbs.GetFirstType : Verbs.GetNextType;
+            var firstValueTask = _myEnumerables._outOfProc.ClientSendVerbAsync(verb, _myEnumerables.regexFilter);
+            firstValueTask.Wait();
+            _curValue = (T)(firstValueTask.Result);
+            curIndx++;
+            return !string.IsNullOrEmpty(_curValue as string);
+        }
+
+        public void Reset()
+        {
+            curIndx = -1;
         }
     }
 }

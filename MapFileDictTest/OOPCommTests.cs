@@ -1,6 +1,7 @@
 ﻿using MapFileDict;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -261,14 +262,14 @@ Children of "<- System.IO.MemoryMappedFiles.MemoryMappedViewAccessor  120cd2dc"
                      // the timing includes parsing the text file for obj graph
                      Trace.WriteLine($"Sent {numObjs}  #Chunks = {numChunksSent} Objs/Sec = {numObjs / sw.Elapsed.TotalSeconds:n2}"); // 5k/sec
 
-                     await oop.ClientSendVerb(Verbs.CreateInvertedObjRefDictionary, null);
+                     await oop.ClientSendVerbAsync(Verbs.CreateInvertedObjRefDictionary, null);
                      Trace.WriteLine($"Inverted Dictionary");
 
 
                      await DoQueryForParents(oop, SystemStackOverflowException, nameof(SystemStackOverflowException));
                      await DoQueryForParents(oop, MemoryMappedViewAccessor, nameof(MemoryMappedViewAccessor));
 
-                     Trace.WriteLine($"Server Logs: " + await oop.ClientSendVerb(Verbs.GetLog, null));
+                     Trace.WriteLine($"Server Logs: " + await oop.ClientSendVerbAsync(Verbs.GetLog, null));
                  });
             }
             catch (Exception ex)
@@ -308,7 +309,7 @@ IntPtr.Size = 8 Creating Shared Memory region
                         // the timing includes parsing the text file for obj graph
                         Trace.WriteLine($"Sent {numObjs}  #Chunks = {numChunksSent} Objs/Sec = {numObjs / sw.Elapsed.TotalSeconds:n2}"); // 5k/sec
 
-                        await oop.ClientSendVerb(Verbs.CreateInvertedObjRefDictionary, null);
+                        await oop.ClientSendVerbAsync(Verbs.CreateInvertedObjRefDictionary, null);
                         Trace.WriteLine($"Inverted Dictionary");
 
                         await DoQueryForParents(oop, SystemStackOverflowException, nameof(SystemStackOverflowException));
@@ -317,7 +318,7 @@ IntPtr.Size = 8 Creating Shared Memory region
 
                         await DoQueryForParents(oop, MemoryMappedViewAccessor, nameof(MemoryMappedViewAccessor));
                         Trace.WriteLine("Client: sending quit");
-                        await oop.ClientSendVerb(Verbs.ServerQuit, null);
+                        await oop.ClientSendVerbAsync(Verbs.ServerQuit, null);
                     }
                     catch (Exception ex)
                     {
@@ -379,7 +380,7 @@ Inverted Dictionary
                 if (level < nMaxLevels)
                 {
                     var indent = new string(' ', 2 * level);
-                    var lstParents = (List<uint>)await oop.ClientSendVerb(Verbs.QueryParentOfObject, objId);
+                    var lstParents = (List<uint>)await oop.ClientSendVerbAsync(Verbs.QueryParentOfObject, objId);
                     if (level == 0)
                     {
                         numImmediateParents = lstParents.Count;
@@ -416,10 +417,10 @@ Inverted Dictionary
 
                 for (int i = 0; i < 5; i++)
                 {
-                    await oop.ClientSendVerb(Verbs.Delayms, 300u);
+                    await oop.ClientSendVerbAsync(Verbs.Delayms, 300u);
                 }
                 //                    await Task.Delay(5000);
-                Trace.WriteLine($"Server Logs: " + await oop.ClientSendVerb(Verbs.GetLog, null));
+                Trace.WriteLine($"Server Logs: " + await oop.ClientSendVerbAsync(Verbs.GetLog, null));
             });
 
             VerifyLogStrings(@"
@@ -442,7 +443,7 @@ Server: Getlog #entries
                 await oop.ConnectToServerAsync(cts.Token);
                 Trace.WriteLine($"Client: connected");
                 await func(oop);
-                await oop.ClientSendVerb(Verbs.ServerQuit, null);
+                await oop.ClientSendVerbAsync(Verbs.ServerQuit, null);
             }
             Trace.WriteLine($"Done in {sw.Elapsed.TotalSeconds:n2}");
             var serverDidExit = false;
@@ -487,17 +488,17 @@ Server: Getlog #entries
                         await oop.ConnectToServerAsync(cts.Token);
 
                         //                        await oop.ClientSendVerb(Verbs.DoMessageBox, $"Message From Client");
-                        await oop.ClientSendVerb(Verbs.Delayms, (uint)2);
+                        await oop.ClientSendVerbAsync(Verbs.Delayms, (uint)2);
 
                         //Trace.WriteLine("Client: sending quit");
                         //await oop.ClientSendVerb(Verbs.ServerQuit, null);
                         //return;
-                        var str = await oop.ClientSendVerb(Verbs.verbRequestData, null);
+                        var str = await oop.ClientSendVerbAsync(Verbs.verbRequestData, null);
                         Trace.WriteLine($"Req data {str}");
 
-                        await oop.ClientSendVerb(Verbs.CreateSharedMemSection, 65536U);
+                        await oop.ClientSendVerbAsync(Verbs.CreateSharedMemSection, 65536U);
 
-                        await oop.ClientSendVerb(Verbs.Delayms, (uint)1);
+                        await oop.ClientSendVerbAsync(Verbs.Delayms, (uint)1);
                         // speedtest
                         var sw = Stopwatch.StartNew();
 
@@ -507,17 +508,17 @@ Server: Getlog #entries
                         for (int iter = 0; iter < nIter; iter++)
                         {
                             Trace.WriteLine($"Sending buf {bufSize:n0} Iter={iter}");
-                            await oop.ClientSendVerb(Verbs.DoSpeedTest, bufSpeed);
+                            await oop.ClientSendVerbAsync(Verbs.DoSpeedTest, bufSpeed);
                         }
                         var bps = (double)bufSize * nIter / sw.Elapsed.TotalSeconds;
                         Trace.WriteLine($"BytesPerSec = {bps:n0}"); // 1.4 G/Sec
 
-                        var strbig = (string)await oop.ClientSendVerb(Verbs.GetStringSharedMem, 0);
+                        var strbig = (string)await oop.ClientSendVerbAsync(Verbs.GetStringSharedMem, 0);
                         Trace.Write($"Got big string Len = {strbig.Length} " + strbig);
 
-                        Trace.WriteLine($"Server Logs: " + await oop.ClientSendVerb(Verbs.GetLog, null));
+                        Trace.WriteLine($"Server Logs: " + await oop.ClientSendVerbAsync(Verbs.GetLog, null));
                         Trace.WriteLine("Client: sending quit");
-                        await oop.ClientSendVerb(Verbs.ServerQuit, null);
+                        await oop.ClientSendVerbAsync(Verbs.ServerQuit, null);
                     }
                     catch (Exception ex)
                     {
@@ -575,16 +576,16 @@ Server: Getlog #entries
                         await oop.ConnectToServerAsync(cts.Token);
 
                         //                        await oop.ClientSendVerb(Verbs.DoMessageBox, $"Message From Client");
-                        await oop.ClientSendVerb(Verbs.Delayms, (uint)2);
+                        await oop.ClientSendVerbAsync(Verbs.Delayms, (uint)2);
 
                         //Trace.WriteLine("Client: sending quit");
                         //await oop.ClientSendVerb(Verbs.ServerQuit, null);
                         //return;
-                        var str = await oop.ClientSendVerb(Verbs.verbRequestData, null);
+                        var str = await oop.ClientSendVerbAsync(Verbs.verbRequestData, null);
 
-                        Trace.WriteLine($"Server Logs: " + await oop.ClientSendVerb(Verbs.GetLog, null));
+                        Trace.WriteLine($"Server Logs: " + await oop.ClientSendVerbAsync(Verbs.GetLog, null));
                         Trace.WriteLine("Client: sending quit");
-                        await oop.ClientSendVerb(Verbs.ServerQuit, null);
+                        await oop.ClientSendVerbAsync(Verbs.ServerQuit, null);
                     }
                     catch (Exception ex)
                     {
@@ -617,7 +618,7 @@ Server: Getlog #entries
             using (var oop = new OutOfProc(
                 new OutOfProcOptions()
                 {
-                    CreateServerOutOfProc = true
+                    CreateServerOutOfProc = false
                 },
                 cts.Token))
             {
@@ -639,11 +640,12 @@ Server: Getlog #entries
                         var numObjsToSend = 1000 * 1000 * 10;
                         //                        numObjsToSend = 10;
                         var sw = Stopwatch.StartNew();
-                        await SendObjectsAndTypesAsync(new ClrUtil(numObjsToSend), oop);
+                        var clrUtil = new ClrUtil(numObjsToSend, oop);
+                        await SendObjectsAndTypesAsync(clrUtil, oop);
                         Trace.WriteLine($"Sent {numObjsToSend:n0}  Objs/Sec = {numObjsToSend / sw.Elapsed.TotalSeconds:n2}"); // 5k/sec
                         async Task ShowObjsAsync(string typeName)
                         {
-                            var lstObjs = (List<uint>)await oop.ClientSendVerb(Verbs.GetObjsOfType, typeName);
+                            var lstObjs = await oop.GetObjectsOfType(typeName);
                             Trace.WriteLine($"#Objs of {typeName} {lstObjs.Count}");
 
                             foreach (var obj in lstObjs.Take(5))
@@ -654,9 +656,21 @@ Server: Getlog #entries
                         await ShowObjsAsync("ClrType1");
                         await ShowObjsAsync("ClrType2");
                         await ShowObjsAsync("NonExistentType");
-                        Trace.WriteLine($"Server Logs: " + await oop.ClientSendVerb(Verbs.GetLog, null));
+                        foreach (var type in clrUtil.EnumerateObjectTypes("ClrType21.*").Skip(3))
+                        {
+                            Trace.WriteLine($"enumtype {type}");
+                        }
+                        var totcnt = clrUtil.EnumerateObjectTypes("").Count();
+                        Trace.WriteLine($"# of all types = {totcnt}");
+                        var cnt = clrUtil.EnumerateObjectTypes("nonefound.*").Count();
+                        Trace.WriteLine($"# of 'nonefound' types = {cnt}");
+                        foreach (var type in clrUtil.EnumerateObjectTypes("nonefound.*").Skip(3))
+                        {
+                            Trace.WriteLine($"enumtype {type}");
+                        }
+                        Trace.WriteLine($"Server Logs: " + await oop.ClientSendVerbAsync(Verbs.GetLog, null));
                         Trace.WriteLine("Client: sending quit");
-                        await oop.ClientSendVerb(Verbs.ServerQuit, null);
+                        await oop.ClientSendVerbAsync(Verbs.ServerQuit, null);
                     }
                     catch (Exception ex)
                     {
@@ -688,11 +702,15 @@ ClrType1 000006af
 ClrType2 00000002
 ClrType2 000006b0
 #Objs of NonExistentType 0
+enumtype ClrType214
+# of all types = 2710
+# of 'nonefound' types = 0
 ");
         }
+
         internal async Task SendObjectsAndTypesAsync(ClrUtil clrUtil, OutOfProc outOfProc)
         {
-            await outOfProc.ClientSendVerb(Verbs.CreateSharedMemSection, 2 * 65536u);
+            await outOfProc.ClientSendVerbAsync(Verbs.CreateSharedMemSection, 2 * 65536u);
             uint typeIdNext = 0;
             var bufChunkSize = outOfProc._sharedMapSize - 8; // room for null term
             var numChunksSent = 0;
@@ -784,8 +802,8 @@ ClrType2 000006b0
                 await SendBufferAsync(Verbs.SendTypeIdAndTypeNameInChunks);
             }
             // now that we've sent all the data, let the server know and calculate the various data structures required
-            await outOfProc.ClientSendVerb(Verbs.CloseSharedMemSection, 0);
-            await outOfProc.ClientSendVerb(Verbs.ObjsAndTypesDone, 0);
+            await outOfProc.ClientSendVerbAsync(Verbs.CloseSharedMemSection, 0);
+            await outOfProc.ClientSendVerbAsync(Verbs.ObjsAndTypesDone, 0);
 
             async Task SendBufferAsync(Verbs verb)
             {
@@ -794,16 +812,20 @@ ClrType2 000006b0
                     var ptr = (uint*)outOfProc._MemoryMappedRegionAddress;
                     ptr[ndxbufChunk++] = 0; //null term
                 }
-                await outOfProc.ClientSendVerb(verb, 0);
+                await outOfProc.ClientSendVerbAsync(verb, 0);
                 numChunksSent++;
             }
         }
         public class ClrUtil
         {
-            public ClrUtil(int numObjsToSend)
+            public ClrHeap _heap;
+            internal OutOfProc _outOfProc;
+            public ClrUtil(int numObjsToSend, OutOfProc outOfProc)
             {
                 _heap = new ClrHeap(numObjsToSend);
+                this._outOfProc = outOfProc;
             }
+
             public void LogString(string s)
             {
                 Trace.WriteLine(s);
@@ -843,7 +865,12 @@ ClrType2 000006b0
                     }
                 }
             }
-            public ClrHeap _heap;
+
+            public IEnumerable<string> EnumerateObjectTypes(string regexFilter = null)
+            {
+                var x = new MyEnumerable<string>(regexFilter, _outOfProc);
+                return x;
+            }
         }
         public class ClrType
         {
@@ -853,6 +880,5 @@ ClrType2 000006b0
                 return Name;
             }
         }
-
     }
 }
