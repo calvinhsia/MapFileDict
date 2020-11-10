@@ -1,5 +1,4 @@
 ﻿using System;
-using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO.Pipes;
@@ -446,7 +445,7 @@ namespace MapFileDict
                     while (_enumeratorDictTypes.MoveNext())
                     {
                         var val = _enumeratorDictTypes.Current;
-                        if (string.IsNullOrEmpty(_strRegExFilterTypes) || Regex.IsMatch(val, _strRegExFilterTypes))
+                        if (string.IsNullOrEmpty(_strRegExFilterTypes) || Regex.IsMatch(val, _strRegExFilterTypes, RegexOptions.IgnoreCase))
                         {
                             await PipeFromServer.WriteStringAsAsciiAsync(_enumeratorDictTypes.Current);
                             fGotOne = true;
@@ -710,66 +709,6 @@ namespace MapFileDict
                 }
             }
             return Task.FromResult(dictInvert);
-        }
-
-        public async Task<List<uint>> GetObjectsOfType(string typeName)
-        {
-            return (List<uint>)await ClientSendVerbAsync(Verbs.GetObjsOfType, typeName);
-        }
-    }
-    struct MyEnumerable<T> : IEnumerable<T>
-    {
-        internal string regexFilter;
-        internal OutOfProc _outOfProc;
-
-        public MyEnumerable(string regexFilter, OutOfProc outOfProc)
-        {
-            this.regexFilter = regexFilter;
-            this._outOfProc = outOfProc;
-        }
-
-        public IEnumerator<T> GetEnumerator()
-        {
-            var en = new MyEnumerator<T>(this);
-            return en;
-        }
-        IEnumerator IEnumerable.GetEnumerator()
-        {
-            var en = new MyEnumerator<T>(this);
-            return en;
-        }
-    }
-    internal class MyEnumerator<T> : IEnumerator<T>
-    {
-        private T _curValue = default(T);
-        private MyEnumerable<T> _myEnumerables;
-        int curIndx = -1;
-        public MyEnumerator(MyEnumerable<T> myEnumerables)
-        {
-            this._myEnumerables = myEnumerables;
-        }
-
-        public T Current => _curValue;
-
-        object IEnumerator.Current => _curValue;
-
-        public void Dispose()
-        {
-        }
-
-        public bool MoveNext()
-        {
-            var verb = curIndx == -1 ? Verbs.GetFirstType : Verbs.GetNextType;
-            var firstValueTask = _myEnumerables._outOfProc.ClientSendVerbAsync(verb, _myEnumerables.regexFilter);
-            firstValueTask.Wait();
-            _curValue = (T)(firstValueTask.Result);
-            curIndx++;
-            return !string.IsNullOrEmpty(_curValue as string);
-        }
-
-        public void Reset()
-        {
-            curIndx = -1;
         }
     }
 }

@@ -618,7 +618,7 @@ Server: Getlog #entries
             using (var oop = new OutOfProc(
                 new OutOfProcOptions()
                 {
-                    CreateServerOutOfProc = false
+                    CreateServerOutOfProc = true
                 },
                 cts.Token))
             {
@@ -645,7 +645,7 @@ Server: Getlog #entries
                         Trace.WriteLine($"Sent {numObjsToSend:n0}  Objs/Sec = {numObjsToSend / sw.Elapsed.TotalSeconds:n2}"); // 5k/sec
                         async Task ShowObjsAsync(string typeName)
                         {
-                            var lstObjs = await oop.GetObjectsOfType(typeName);
+                            var lstObjs = await clrUtil.GetObjectsOfType(typeName);
                             Trace.WriteLine($"#Objs of {typeName} {lstObjs.Count}");
 
                             foreach (var obj in lstObjs.Take(5))
@@ -656,6 +656,7 @@ Server: Getlog #entries
                         await ShowObjsAsync("ClrType1");
                         await ShowObjsAsync("ClrType2");
                         await ShowObjsAsync("NonExistentType");
+                        Trace.WriteLine("Now check enumeration");
                         foreach (var type in clrUtil.EnumerateObjectTypes("ClrType21.*").Skip(3))
                         {
                             Trace.WriteLine($"enumtype {type}");
@@ -668,6 +669,12 @@ Server: Getlog #entries
                         {
                             Trace.WriteLine($"enumtype {type}");
                         }
+
+                        foreach (var type in clrUtil.EnumerateObjectTypes(@"Microsoft\.VisualStudio\.Text\.BufferUndoManager\.Implementation.*"))
+                        {
+                            Trace.WriteLine($"enumtype tbuffer {type}");
+                        }
+
                         Trace.WriteLine($"Server Logs: " + await oop.ClientSendVerbAsync(Verbs.GetLog, null));
                         Trace.WriteLine("Client: sending quit");
                         await oop.ClientSendVerbAsync(Verbs.ServerQuit, null);
@@ -703,7 +710,7 @@ ClrType2 00000002
 ClrType2 000006b0
 #Objs of NonExistentType 0
 enumtype ClrType214
-# of all types = 2710
+# of all types = 2711
 # of 'nonefound' types = 0
 ");
         }
@@ -854,6 +861,10 @@ enumtype ClrType214
 
                 internal ClrType GetObjectType(uint objAddr)
                 {
+                    if (objAddr % 1500 == 0)
+                    {
+                        return new ClrType() { Name = @"Microsoft.VisualStudio.Text.BufferUndoManager.Implementation.TextBufferUndoManager"};
+                    }
                     return new ClrType() { Name = $"ClrType{objAddr % 1710}" };
                 }
 
@@ -871,6 +882,12 @@ enumtype ClrType214
                 var x = new MyEnumerable<string>(regexFilter, _outOfProc);
                 return x;
             }
+
+            internal async Task<List<uint>> GetObjectsOfType(string typeName)
+            {
+                var lstRaw = (List<uint>)await _outOfProc.ClientSendVerbAsync(Verbs.GetObjsOfType, typeName);
+                return lstRaw;
+            }
         }
         public class ClrType
         {
@@ -879,6 +896,61 @@ enumtype ClrType214
             {
                 return Name;
             }
+        }
+    }
+    struct MyEnumerable<T> : IEnumerable<T>
+    {
+        internal string regexFilter;
+        internal OutOfProc _outOfProc;
+
+        public MyEnumerable(string regexFilter, OutOfProc outOfProc)
+        {
+            this.regexFilter = regexFilter;
+            this._outOfProc = outOfProc;
+        }
+
+        public IEnumerator<T> GetEnumerator()
+        {
+            var en = new MyEnumerator<T>(this);
+            return en;
+        }
+        IEnumerator IEnumerable.GetEnumerator()
+        {
+            var en = new MyEnumerator<T>(this);
+            return en;
+        }
+    }
+    internal class MyEnumerator<T> : IEnumerator<T>
+    {
+        private T _curValue = default(T);
+        private MyEnumerable<T> _myEnumerables;
+        int curIndx = -1;
+        public MyEnumerator(MyEnumerable<T> myEnumerables)
+        {
+            this._myEnumerables = myEnumerables;
+        }
+
+        public T Current => _curValue;
+
+        object IEnumerator.Current => _curValue;
+
+        public void Dispose()
+        {
+        }
+
+        public bool MoveNext()
+        {
+            var verb = curIndx == -1 ? Verbs.GetFirstType : Verbs.GetNextType;
+            var firstValueTask = _myEnumerables._outOfProc.ClientSendVerbAsync(verb, _myEnumerables.regexFilter);
+            firstValueTask.Wait();
+            _curValue = (T)(firstValueTask.Result);
+            curIndx++;
+            return !string.IsNullOrEmpty(_curValue as string);
+        }
+
+        public void Reset()
+        {
+            curIndx = -1;
         }
     }
 }
