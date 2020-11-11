@@ -675,6 +675,14 @@ Server: Getlog #entries
                             Trace.WriteLine($"enumtype tbuffer {type}");
                         }
 
+
+                        var lstTypesAndCounts = (List<Tuple<string, uint>>) await oop.ClientSendVerbAsync(Verbs.GetTypesAndCounts, 0);
+                        foreach (var itm in lstTypesAndCounts.Take(10))
+                        {
+                            Trace.WriteLine($" Types&Counts {itm.Item2}  {itm.Item1}");
+                        }
+
+
                         Trace.WriteLine($"Server Logs: " + await oop.ClientSendVerbAsync(Verbs.GetLog, null));
                         Trace.WriteLine("Client: sending quit");
                         await oop.ClientSendVerbAsync(Verbs.ServerQuit, null);
@@ -810,7 +818,7 @@ enumtype ClrType214
             }
             // now that we've sent all the data, let the server know and calculate the various data structures required
             await outOfProc.ClientSendVerbAsync(Verbs.CloseSharedMemSection, 0);
-            await outOfProc.ClientSendVerbAsync(Verbs.ObjsAndTypesDone, 0);
+            await outOfProc.ClientSendVerbAsync(Verbs.ObjsAndTypesDoneSending, 0);
 
             async Task SendBufferAsync(Verbs verb)
             {

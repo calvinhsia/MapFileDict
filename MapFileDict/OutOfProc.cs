@@ -39,10 +39,11 @@ namespace MapFileDict
                                         // very useful for finding: e.g. who holds a reference to FOO
         QueryParentOfObject, // given an obj, get a list of objs that reference it
         Delayms,
-        ObjsAndTypesDone,
+        ObjsAndTypesDoneSending,
         GetObjsOfType,
         GetFirstType,
         GetNextType,
+        GetTypesAndCounts,
     }
     public class OutOfProc : OutOfProcBase
     {
@@ -56,7 +57,7 @@ namespace MapFileDict
 
         Dictionary<uint, List<uint>> dictObjToRefs = new Dictionary<uint, List<uint>>();
         Dictionary<uint, List<uint>> dictObjToParents = null;
-        private Task taskProcessSentObjects;
+        private Task taskCreateDictionariesForSentObjects;
         private Task taskCreateInvertedObjRefDictionary;
         private Dictionary<string, List<uint>>.KeyCollection.Enumerator _enumeratorDictTypes;
         private string _strRegExFilterTypes;
@@ -407,15 +408,15 @@ namespace MapFileDict
                     return null;
                 });
 
-            AddVerb(Verbs.ObjsAndTypesDone,
+            AddVerb(Verbs.ObjsAndTypesDoneSending,
                 actClientSendVerb: async (arg) =>
                 {
-                    await PipeFromClient.WriteVerbAsync(Verbs.ObjsAndTypesDone);
+                    await PipeFromClient.WriteVerbAsync(Verbs.ObjsAndTypesDoneSending);
                     return null;
                 },
                 actServerDoVerb: async (arg) =>
                 {
-                    this.taskProcessSentObjects = Task.Run(() =>
+                    this.taskCreateDictionariesForSentObjects = Task.Run(() =>
                     {
                         foreach (var objToTypeItem in dictObjToTypeId)
                         {
@@ -445,7 +446,7 @@ namespace MapFileDict
                 {
                     await PipeFromServer.WriteAcknowledgeAsync();
                     _strRegExFilterTypes = await PipeFromServer.ReadStringAsAsciiAsync();
-                    await taskProcessSentObjects;
+                    await taskCreateDictionariesForSentObjects;
                     _enumeratorDictTypes = dictTypeToObjList.Keys.GetEnumerator();
                     var fGotOne = false;
                     while (_enumeratorDictTypes.MoveNext())
@@ -492,6 +493,37 @@ namespace MapFileDict
                     }
                     return null;
                 });
+
+            AddVerb(Verbs.GetTypesAndCounts,
+                actClientSendVerb: async (arg) =>
+                {
+                    await PipeFromClient.WriteVerbAsync(Verbs.GetTypesAndCounts);
+                    var res = new List<Tuple<string, uint>>();
+                    while (true)
+                    {
+                        var cnt = await PipeFromClient.ReadUInt32();
+                        if (cnt == 0)
+                        {
+                            break;
+                        }
+                        var type = await PipeFromClient.ReadStringAsAsciiAsync();
+                        res.Add(Tuple.Create(type, cnt));
+                    }
+                    return res;
+                },
+                actServerDoVerb: async (arg) =>
+                {
+                    await PipeFromServer.WriteAcknowledgeAsync();
+                    await taskCreateDictionariesForSentObjects;
+                    foreach (var kvp in dictTypeToObjList.OrderByDescending(k=>k.Value.Count))
+                    {
+                        await PipeFromServer.WriteUInt32((uint)kvp.Value.Count);
+                        await PipeFromServer.WriteStringAsAsciiAsync(kvp.Key);
+                    }
+                    await PipeFromServer.WriteUInt32(0); //null term
+                    return null;
+                });
+
 
             //Need to send 10s of millions of objs: sending in chunks is much faster than one at a time.
             AddVerb(Verbs.SendObjAndReferencesInChunks,
@@ -555,7 +587,7 @@ namespace MapFileDict
                     await PipeFromServer.WriteAcknowledgeAsync();
                     var maxnumobjs = await PipeFromServer.ReadUInt32();
                     var strType = await PipeFromServer.ReadStringAsAsciiAsync();
-                    await taskProcessSentObjects;
+                    await taskCreateDictionariesForSentObjects;
                     int cnt = 0;
                     if (dictTypeToObjList.TryGetValue(strType, out var lstObjs))
                     {
