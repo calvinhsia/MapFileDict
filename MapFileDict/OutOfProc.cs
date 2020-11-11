@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO.Pipes;
@@ -165,6 +166,10 @@ namespace MapFileDict
                         Trace.WriteLine($"Server: Getlog #entries = {mylistener.lstLoggedStrings.Count}");
                         strlog = string.Join("\r\n   ", mylistener.lstLoggedStrings);
                         mylistener.lstLoggedStrings.Clear();
+                    }
+                    else
+                    {
+                        strlog = $"Nothing in server log. {nameof(Options.ServerTraceLogging)}= {Options.ServerTraceLogging}" + Environment.NewLine;
                     }
                     await PipeFromServer.WriteStringAsAsciiAsync(strlog);
                     return null;
@@ -440,6 +445,7 @@ namespace MapFileDict
                 {
                     await PipeFromServer.WriteAcknowledgeAsync();
                     _strRegExFilterTypes = await PipeFromServer.ReadStringAsAsciiAsync();
+                    await taskProcessSentObjects;
                     _enumeratorDictTypes = dictTypeToObjList.Keys.GetEnumerator();
                     var fGotOne = false;
                     while (_enumeratorDictTypes.MoveNext())
@@ -447,7 +453,7 @@ namespace MapFileDict
                         var val = _enumeratorDictTypes.Current;
                         if (string.IsNullOrEmpty(_strRegExFilterTypes) || Regex.IsMatch(val, _strRegExFilterTypes, RegexOptions.IgnoreCase))
                         {
-                            await PipeFromServer.WriteStringAsAsciiAsync(_enumeratorDictTypes.Current);
+                            await PipeFromServer.WriteStringAsAsciiAsync(val);
                             fGotOne = true;
                             break;
                         }
@@ -475,7 +481,7 @@ namespace MapFileDict
                         var val = _enumeratorDictTypes.Current;
                         if (string.IsNullOrEmpty(_strRegExFilterTypes) || Regex.IsMatch(val, _strRegExFilterTypes))
                         {
-                            await PipeFromServer.WriteStringAsAsciiAsync(_enumeratorDictTypes.Current);
+                            await PipeFromServer.WriteStringAsAsciiAsync(val);
                             fGotOne = true;
                             break;
                         }
@@ -528,8 +534,10 @@ namespace MapFileDict
             AddVerb(Verbs.GetObjsOfType,
                 actClientSendVerb: async (arg) =>
                 {
+                    var tup = (Tuple<string, uint>)arg;
                     await PipeFromClient.WriteVerbAsync(Verbs.GetObjsOfType);
-                    await PipeFromClient.WriteStringAsAsciiAsync(arg as string);
+                    await PipeFromClient.WriteUInt32(tup.Item2); // max: sometimes we only want 1 object of the class to get the ClrType (e.g. EventHandlers)
+                    await PipeFromClient.WriteStringAsAsciiAsync(tup.Item1);
                     var lstObjs = new List<uint>();
                     while (true)
                     {
@@ -545,13 +553,19 @@ namespace MapFileDict
                 actServerDoVerb: async (arg) =>
                 {
                     await PipeFromServer.WriteAcknowledgeAsync();
+                    var maxnumobjs = await PipeFromServer.ReadUInt32();
                     var strType = await PipeFromServer.ReadStringAsAsciiAsync();
                     await taskProcessSentObjects;
+                    int cnt = 0;
                     if (dictTypeToObjList.TryGetValue(strType, out var lstObjs))
                     {
                         foreach (var obj in lstObjs)
                         {
                             await PipeFromServer.WriteUInt32(obj);
+                            if (maxnumobjs != 0 && ++cnt >= maxnumobjs)
+                            {
+                                break;
+                            }
                         }
                     }
                     await PipeFromServer.WriteUInt32(0); // terminator

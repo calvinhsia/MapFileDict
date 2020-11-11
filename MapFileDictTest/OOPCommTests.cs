@@ -643,9 +643,9 @@ Server: Getlog #entries
                         var clrUtil = new ClrUtil(numObjsToSend, oop);
                         await SendObjectsAndTypesAsync(clrUtil, oop);
                         Trace.WriteLine($"Sent {numObjsToSend:n0}  Objs/Sec = {numObjsToSend / sw.Elapsed.TotalSeconds:n2}"); // 5k/sec
-                        async Task ShowObjsAsync(string typeName)
+                        async Task ShowObjsAsync(string typeName, uint maxNumObjs = 0)
                         {
-                            var lstObjs = await clrUtil.GetObjectsOfType(typeName);
+                            var lstObjs = await clrUtil.GetObjectsOfType(typeName, maxNumObjs);
                             Trace.WriteLine($"#Objs of {typeName} {lstObjs.Count}");
 
                             foreach (var obj in lstObjs.Take(5))
@@ -654,7 +654,7 @@ Server: Getlog #entries
                             }
                         }
                         await ShowObjsAsync("ClrType1");
-                        await ShowObjsAsync("ClrType2");
+                        await ShowObjsAsync("ClrType2", maxNumObjs: 5);
                         await ShowObjsAsync("NonExistentType");
                         Trace.WriteLine("Now check enumeration");
                         foreach (var type in clrUtil.EnumerateObjectTypes("ClrType21.*").Skip(3))
@@ -705,7 +705,7 @@ Server: Getlog #entries
 #Objs of ClrType1 5847
 ClrType1 00000001
 ClrType1 000006af
-#Objs of ClrType2 5847
+#Objs of ClrType2 5
 ClrType2 00000002
 ClrType2 000006b0
 #Objs of NonExistentType 0
@@ -863,7 +863,7 @@ enumtype ClrType214
                 {
                     if (objAddr % 1500 == 0)
                     {
-                        return new ClrType() { Name = @"Microsoft.VisualStudio.Text.BufferUndoManager.Implementation.TextBufferUndoManager"};
+                        return new ClrType() { Name = @"Microsoft.VisualStudio.Text.BufferUndoManager.Implementation.TextBufferUndoManager" };
                     }
                     return new ClrType() { Name = $"ClrType{objAddr % 1710}" };
                 }
@@ -883,9 +883,9 @@ enumtype ClrType214
                 return x;
             }
 
-            internal async Task<List<uint>> GetObjectsOfType(string typeName)
+            internal async Task<List<uint>> GetObjectsOfType(string typeName, uint maxNumObjs = 0)
             {
-                var lstRaw = (List<uint>)await _outOfProc.ClientSendVerbAsync(Verbs.GetObjsOfType, typeName);
+                var lstRaw = (List<uint>)await _outOfProc.ClientSendVerbAsync(Verbs.GetObjsOfType, Tuple.Create(typeName, maxNumObjs));
                 return lstRaw;
             }
         }

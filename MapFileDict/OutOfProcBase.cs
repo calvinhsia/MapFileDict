@@ -30,15 +30,19 @@ namespace MapFileDict
         public string AdditionalAssemblyPaths = string.Empty;
         public int TimeoutSecsPipeOp = 4;
         public bool ServerTraceLogging = true;
+        /// <summary>
+        /// Unit tests start/stop the OOP server very quickly: we don't want to use the same pipe name, because it's a race condition
+        /// </summary>
+        public string NamedPipeAddString = string.Empty;
 
-        public int PidClient;
+        internal int PidClient;
+        internal string NamedPipeName; // only internal use: the client creates the pipename, the server uses it to connect
 
     }
     public abstract class OutOfProcBase : IDisposable
     {
         private CancellationToken token;
         public OutOfProcOptions Options;
-        private readonly string pipeName;
 
         public uint _sharedMapSize;
         protected string _sharedFileMapName;
@@ -77,12 +81,12 @@ namespace MapFileDict
             }
             this.Options = options;
             this.token = token;
-            pipeName = $"MapFileDictPipe_{pidClient}";
+            this.Options.NamedPipeName = $"MapFileDictPipe_{pidClient}" + options.NamedPipeAddString;
             if (Process.GetCurrentProcess().Id == options.PidClient) //we're the client process?
             {
                 PipeFromClient = new NamedPipeClientStream(
                     serverName: ".",
-                    pipeName: pipeName,
+                    pipeName: this.Options.NamedPipeName,
                     direction: PipeDirection.InOut,
                     options: PipeOptions.Asynchronous);
                 if (options.CreateServerOutOfProc)
@@ -104,8 +108,11 @@ namespace MapFileDict
             }
             else
             { //we're the server process
-                mylistener = new MyTraceListener();
-                Trace.Listeners.Add(mylistener);
+                if (options.ServerTraceLogging)
+                {
+                    mylistener = new MyTraceListener();
+                    Trace.Listeners.Add(mylistener);
+                }
                 Trace.WriteLine($"Server Process IntPtr.Size = {IntPtr.Size} Trace Listener created");
                 DoServerLoopTask = DoServerLoopAsync();
             }
@@ -155,7 +162,7 @@ namespace MapFileDict
 
             var args = $@"""{Assembly.GetAssembly(typeof(OutOfProcBase)).Location
                                }"" {nameof(OutOfProcBase)} {
-                                   nameof(OutOfProcBase.MyMainMethod)} {pidClient} {typeToInstantiateName}";
+                                   nameof(OutOfProcBase.MyMainMethod)} {pidClient} {typeToInstantiateName} {this.Options.NamedPipeName}";
             Trace.WriteLine($"args = {args}");
             ProcServer = Process.Start(
                 asm64BitFile,
@@ -165,7 +172,7 @@ namespace MapFileDict
         /// <summary>
         /// This is entry point in the 64 bit server process. Create an execution context for the asyncs
         /// </summary>
-        public static async Task MyMainMethod(int pidClient, string typeToInstantiateName)
+        public static async Task MyMainMethod(int pidClient, string typeToInstantiateName, string namedPipeName)
         {
             var tcsStaThread = new TaskCompletionSource<int>();
             var execContext = CreateExecutionContext(tcsStaThread);
@@ -177,7 +184,9 @@ namespace MapFileDict
                 try
                 {
                     var typeToInstantiate = typeof(OutOfProc).Assembly.GetTypes().Where(t => t.Name == typeToInstantiateName).FirstOrDefault();
-                    var args = new object[] { new OutOfProcOptions() { PidClient = pidClient }, new CancellationToken() };
+                    var args = new object[] {
+                        new OutOfProcOptions() { PidClient = pidClient, NamedPipeName= namedPipeName },
+                        new CancellationToken()};
                     oop = (OutOfProcBase)Activator.CreateInstance(typeToInstantiate, args);
                     Trace.WriteLine($"{nameof(oop.DoServerLoopAsync)} start");
                     await oop.DoServerLoopTask;
@@ -205,7 +214,7 @@ namespace MapFileDict
                 Trace.WriteLine("Server: Starting ");
                 await tcsAddedVerbs.Task;
                 PipeFromServer = new NamedPipeServerStream(
-                    pipeName: pipeName,
+                    pipeName: this.Options.NamedPipeName,
                     direction: PipeDirection.InOut,
                     maxNumberOfServerInstances: 1,
                     transmissionMode: PipeTransmissionMode.Message,
