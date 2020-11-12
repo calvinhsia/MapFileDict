@@ -630,7 +630,8 @@ Server: Getlog #entries
             using (var oop = new OutOfProc(
                 new OutOfProcOptions()
                 {
-                    CreateServerOutOfProc = true
+                    CreateServerOutOfProc = false,
+                    SizeOfSharedMemory = 65536u * 1
                 },
                 cts.Token))
             {
@@ -732,7 +733,7 @@ Server: Getlog #entries
                 }
             }
             VerifyLogStrings(@"
-#Objs of ClrType1 5847
+#Objs of ClrType1 6667
 ClrType1 00000001
 ClrType1 000006af
 #Objs of ClrType2 5
@@ -740,7 +741,7 @@ ClrType2 00000002
 ClrType2 000006b0
 #Objs of NonExistentType 0
 enumtype ClrType214
-# of all types = 2711
+# of all types = 2710
 # of 'nonefound' types = 0
 ");
         }
@@ -775,12 +776,17 @@ enumtype ClrType214
                 }
                 numObjs++;
             }
+            var actualnumberClrType1 = 0;
             foreach (var objAddr in clrUtil._heap.EnumerateObjectAddresses())
             {
                 ClrType type = null;
                 try
                 {
                     type = clrUtil._heap.GetObjectType(objAddr);
+                    if (type.Name == "ClrType1")
+                    {
+                        actualnumberClrType1++;
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -804,6 +810,7 @@ enumtype ClrType214
             {
                 await SendBufferAsync(Verbs.SendObjAndTypeIdInChunks);
             }
+            Trace.WriteLine($"Actual#ClrType1={actualnumberClrType1}");
             Trace.WriteLine($"Client sent # objs= {numObjs:n0} # chunks = {numChunksSent}");
             // now we send type names and Ids as series of UINT ID, UINT nameLen, byte[namelen]
             var numTypes = 0;
@@ -872,6 +879,16 @@ enumtype ClrType214
                 public ClrHeap(int numObjsToSend)
                 {
                     this.numObjsToSend = numObjsToSend;
+                    for (int i = 0; i < numClrTypes; i++)
+                    {
+                        var tname = $"ClrType{i% 1710}";
+                        if (i % 1500 == 0)
+                        {
+                            tname = @"Microsoft.VisualStudio.Text.BufferUndoManager.Implementation.TextBufferUndoManager";
+                        }
+                        var ty = new ClrType() { Name = tname };
+                        _types.Add(ty);
+                    }
                 }
 
                 public class root
@@ -886,16 +903,12 @@ enumtype ClrType214
                         yield return i;
                     }
                 }
-
+                List<ClrType> _types = new List<ClrType>();
+                int numClrTypes = 3000;
                 internal ClrType GetObjectType(uint objAddr)
                 {
-                    if (objAddr % 1500 == 0)
-                    {
-                        return new ClrType() { Name = @"Microsoft.VisualStudio.Text.BufferUndoManager.Implementation.TextBufferUndoManager" };
-                    }
-                    return new ClrType() { Name = $"ClrType{objAddr % 1710}" };
+                    return _types[(int)(objAddr % numClrTypes)];
                 }
-
                 internal IEnumerable<root> EnumerateRoots(bool enumerateStatics)
                 {
                     for (uint i = 0; i < 1000; i++)

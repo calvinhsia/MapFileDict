@@ -405,7 +405,6 @@ namespace MapFileDict
                         }
                     }
                     await PipeFromServer.WriteAcknowledgeAsync();
-                    //                    Trace.WriteLine($"server got {dictObjToTypeId.Count}");
                     return null;
                 });
 
@@ -461,6 +460,8 @@ namespace MapFileDict
                             }
                             lstObjs.Add(objToTypeItem.Key);
                         }
+                        var clrtype1 = dictTypeToObjList["ClrType1"].Count;
+                        Trace.WriteLine($"Server ClrType1 {clrtype1}");
                         Trace.WriteLine($"Server has dictTypeToObjList {dictTypeToObjList.Count}");
                     });
                     await PipeFromServer.WriteAcknowledgeAsync();
@@ -606,12 +607,25 @@ namespace MapFileDict
                     var lstObjs = new List<uint>();
                     while (true)
                     {
-                        var obj = await PipeFromClient.ReadUInt32();
-                        if (obj == 0)
+                        var bufsize = await PipeFromClient.ReadUInt32();
+                        if (bufsize == 0)
                         {
                             break;
                         }
-                        lstObjs.Add(obj);
+                        for (int i = 0; i < bufsize; i++)
+                        {
+                            unsafe
+                            {
+                                var ptr = (uint*)_MemoryMappedRegionAddress;
+                                var obj = ptr[i];
+                                if (obj == 0)
+                                {
+                                    throw new InvalidOperationException("Null obj");
+                                }
+                                lstObjs.Add(obj);
+                            }
+                        }
+                        await PipeFromClient.WriteAcknowledgeAsync(); // got this chunk
                     }
                     return lstObjs;
                 },
@@ -622,15 +636,33 @@ namespace MapFileDict
                     var strType = await PipeFromServer.ReadStringAsAsciiAsync();
                     await taskCreateDictionariesForSentObjects;
                     int cnt = 0;
+                    var bufChunkSize = _sharedMapSize - 4;// leave extra room for null term
+                    var bufNdx = 0U;
                     if (dictTypeToObjList.TryGetValue(strType, out var lstObjs))
                     {
                         foreach (var obj in lstObjs)
                         {
-                            await PipeFromServer.WriteUInt32(obj);
-                            if (maxnumobjs != 0 && ++cnt >= maxnumobjs)
+                            if (4 * bufNdx >= bufChunkSize)
+                            {
+                                await PipeFromServer.WriteUInt32(bufNdx);
+                                await PipeFromServer.ReadAcknowledgeAsync();
+                                bufNdx = 0;
+                            }
+                            unsafe
+                            {
+                                var ptr = (uint*)_MemoryMappedRegionAddress;
+                                ptr[bufNdx++] = obj;
+                            }
+                            cnt++;
+                            if (maxnumobjs != 0 && cnt == maxnumobjs)
                             {
                                 break;
                             }
+                        }
+                        if (bufNdx > 0) // send partial chunk
+                        {
+                            await PipeFromServer.WriteUInt32(bufNdx);
+                            await PipeFromServer.ReadAcknowledgeAsync();
                         }
                     }
                     await PipeFromServer.WriteUInt32(0); // terminator
@@ -692,6 +724,7 @@ namespace MapFileDict
                 });
 
         }
+
         /// <summary>
         /// This runs on the client to send the data in chunks to the server. The object graph is multi million objects
         /// so we don't want to create them all in a data structure to send, but enumerate them and send in chunks

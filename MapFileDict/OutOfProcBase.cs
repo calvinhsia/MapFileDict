@@ -518,6 +518,12 @@ namespace MapFileDict
             PipeMsgTraceWriteline($"  {pipe.GetType().Name} ReadTimeout count={count}");
             var buff = new byte[count];
             var taskRead = Task<int>.Factory.FromAsync(pipe.BeginRead, pipe.EndRead, buff, 0, 1, null, TaskCreationOptions.None);
+#if DEBUG
+            if (Debugger.IsAttached)
+            {
+                TimeoutSecs = 30 * 10000;
+            }
+#endif
             var taskTimeout = Task.Delay(TimeSpan.FromSeconds(TimeoutSecs));
 
             await Task.WhenAny(new Task[] { taskTimeout, taskRead });
