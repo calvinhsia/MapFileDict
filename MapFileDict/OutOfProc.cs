@@ -27,7 +27,8 @@ namespace MapFileDict
         GetLog, // get server log entries: will clear all entries so far
         GetString, // very slow
         GetStringSharedMem, // very fast
-        DoSpeedTest,
+        DoSpeedTestWithByteBuff,
+        DoSpeedTestWithUInts,
         verbRequestData, // for testing
         DoMessageBox,   // for testing
         SendObjAndTypeIdInChunks,
@@ -82,6 +83,8 @@ namespace MapFileDict
                 var lastError = (string)await this.ClientSendVerbAsync(Verbs.GetLastError, null);
                 throw new Exception($"Error establishing connection to server " + lastError);
             }
+            // always create a shared mem section on connection
+            await ClientSendVerbAsync(Verbs.CreateSharedMemSection, Options.SizeOfSharedMemory);
         }
 
 
@@ -293,10 +296,10 @@ namespace MapFileDict
                     return null;
                 });
 
-            AddVerb(Verbs.DoSpeedTest,
+            AddVerb(Verbs.DoSpeedTestWithByteBuff,
                 actClientSendVerb: async (arg) =>
                 {
-                    await PipeFromClient.WriteVerbAsync(Verbs.DoSpeedTest);
+                    await PipeFromClient.WriteVerbAsync(Verbs.DoSpeedTestWithByteBuff);
                     var bufSpeed = (byte[])arg;
                     var bufSize = (UInt32)bufSpeed.Length;
                     await PipeFromClient.WriteUInt32(bufSize);
@@ -310,7 +313,37 @@ namespace MapFileDict
                     var bufSize = await PipeFromServer.ReadUInt32();
                     var buf = new byte[bufSize];
                     await PipeFromServer.ReadAsync(buf, 0, (int)bufSize);
-                    Trace.WriteLine($"Server: got bytes {bufSize:n0}"); // 1.2G/sec raw pipe speed
+                    Trace.WriteLine($"Server: ByteBuff got bytes {bufSize:n0}"); // 1.2G/sec raw pipe speed
+                    await PipeFromServer.WriteAcknowledgeAsync();
+                    return null;
+                });
+
+            AddVerb(Verbs.DoSpeedTestWithUInts,
+                actClientSendVerb: async (arg) =>
+                {
+                    await PipeFromClient.WriteVerbAsync(Verbs.DoSpeedTestWithUInts);
+                    var bufSpeed = (uint[])arg;
+                    var bufSize = (UInt32)bufSpeed.Length;
+                    await PipeFromClient.WriteUInt32(bufSize);
+                    var buf4 = new byte[4];
+                    for (int i = 0; i < bufSize; i++)
+                    {
+                        PipeFromClient.Write(buf4, 0, 4);
+                    }
+                    await PipeFromClient.ReadAcknowledgeAsync();
+                    return null;
+                },
+                actServerDoVerb: async (arg) =>
+                {
+                    await PipeFromServer.WriteAcknowledgeAsync();
+                    var bufSize = await PipeFromServer.ReadUInt32();
+                    var buf = new uint[bufSize];
+                    var buf4 = new byte[4];
+                    for (int i = 0; i < bufSize; i++)
+                    {
+                        var dat = PipeFromServer.Read(buf4, 0, 4);
+                    }
+                    Trace.WriteLine($"Server: got UINT bytes {bufSize:n0}");
                     await PipeFromServer.WriteAcknowledgeAsync();
                     return null;
                 });
@@ -515,7 +548,7 @@ namespace MapFileDict
                 {
                     await PipeFromServer.WriteAcknowledgeAsync();
                     await taskCreateDictionariesForSentObjects;
-                    foreach (var kvp in dictTypeToObjList.OrderByDescending(k=>k.Value.Count))
+                    foreach (var kvp in dictTypeToObjList.OrderByDescending(k => k.Value.Count))
                     {
                         await PipeFromServer.WriteUInt32((uint)kvp.Value.Count);
                         await PipeFromServer.WriteStringAsAsciiAsync(kvp.Key);
@@ -665,7 +698,6 @@ namespace MapFileDict
         /// </summary>
         public async Task<Tuple<int, int>> SendObjRefGraphEnumerableInChunksAsync(IEnumerable<Tuple<uint, List<uint>>> ienumOGraph) // don't want to have dependency on ValueTuple
         {
-            await ClientSendVerbAsync(Verbs.CreateSharedMemSection, 2 * MemMap.AllocationGranularity);
             // can't have unsafe in lambda or anon func
             var bufChunkSize = _sharedMapSize - 4;// leave extra room for null term
             int ndxbufChunk = 0;
@@ -709,7 +741,6 @@ namespace MapFileDict
                 Trace.WriteLine($"Client: send leftovers {ndxbufChunk}");
                 await SendBufferAsync();
             }
-            await ClientSendVerbAsync(Verbs.CloseSharedMemSection, 0);
             return Tuple.Create<int, int>(numObjs, numChunksSent);
             async Task SendBufferAsync()
             {

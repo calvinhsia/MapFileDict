@@ -467,7 +467,7 @@ Server: Getlog #entries
             using (var oop = new OutOfProc(
                 new OutOfProcOptions()
                 {
-                    CreateServerOutOfProc = false
+                    CreateServerOutOfProc = true
                 },
                 cts.Token))
             {
@@ -496,23 +496,34 @@ Server: Getlog #entries
                         var str = await oop.ClientSendVerbAsync(Verbs.verbRequestData, null);
                         Trace.WriteLine($"Req data {str}");
 
-                        await oop.ClientSendVerbAsync(Verbs.CreateSharedMemSection, 65536U);
 
                         await oop.ClientSendVerbAsync(Verbs.Delayms, (uint)1);
                         // speedtest
                         var sw = Stopwatch.StartNew();
 
                         var nIter = 5U;
-                        uint bufSize = 1024 * 1024 * 1024;
-                        var bufSpeed = new byte[bufSize];
-                        for (int iter = 0; iter < nIter; iter++)
                         {
-                            Trace.WriteLine($"Sending buf {bufSize:n0} Iter={iter}");
-                            await oop.ClientSendVerbAsync(Verbs.DoSpeedTest, bufSpeed);
+                            uint bufSize = 1024 * 1024 * 1024;
+                            var bufSpeed = new byte[bufSize];
+                            for (int iter = 0; iter < nIter; iter++)
+                            {
+                                Trace.WriteLine($"Speed Sending ByteBuff {bufSize:n0} Iter={iter}");
+                                await oop.ClientSendVerbAsync(Verbs.DoSpeedTestWithByteBuff, bufSpeed);
+                            }
+                            var bps = (double)bufSize * nIter / sw.Elapsed.TotalSeconds;
+                            Trace.WriteLine($"Sending ByteBuff BytesPerSec = {bps:n0}"); // 1.4 G/Sec
                         }
-                        var bps = (double)bufSize * nIter / sw.Elapsed.TotalSeconds;
-                        Trace.WriteLine($"BytesPerSec = {bps:n0}"); // 1.4 G/Sec
-
+                        {
+                            uint bufSize = 1 * 100 * 1024;
+                            var bufSpeed = new uint[bufSize];
+                            for (int iter = 0; iter < nIter; iter++)
+                            {
+                                Trace.WriteLine($"Speed Sending UInts {bufSize:n0} Iter={iter}");
+                                await oop.ClientSendVerbAsync(Verbs.DoSpeedTestWithUInts, bufSpeed);
+                            }
+                            var bps = 4 * (double)bufSize * nIter / sw.Elapsed.TotalSeconds;
+                            Trace.WriteLine($"Sending UInts BytesPerSec = {bps:n0}"); // 1.4 G/Sec
+                        }
                         var strbig = (string)await oop.ClientSendVerbAsync(Verbs.GetStringSharedMem, 0);
                         Trace.Write($"Got big string Len = {strbig.Length} " + strbig);
 
@@ -611,6 +622,7 @@ Server: Getlog #entries
             }
         }
 
+
         [TestMethod]
         public async Task OOPTestSendObjsAndTypes()
         {
@@ -676,11 +688,21 @@ Server: Getlog #entries
                         }
 
 
-                        var lstTypesAndCounts = (List<Tuple<string, uint>>) await oop.ClientSendVerbAsync(Verbs.GetTypesAndCounts, 0);
+                        var lstTypesAndCounts = (List<Tuple<string, uint>>)await oop.ClientSendVerbAsync(Verbs.GetTypesAndCounts, 0);
                         foreach (var itm in lstTypesAndCounts.Take(10))
                         {
                             Trace.WriteLine($" Types&Counts {itm.Item2}  {itm.Item1}");
                         }
+
+                        //// let's time getting all types and all objs
+                        //sw.Restart();
+                        //var objsRetrieved = 0;
+                        //foreach (var itm in (List<Tuple<string, uint>>)await oop.ClientSendVerbAsync(Verbs.GetTypesAndCounts, 0))
+                        //{
+                        //    var lst = (List<uint>)await oop.ClientSendVerbAsync(Verbs.GetObjsOfType, Tuple.Create(itm.Item1, 0u));
+                        //    objsRetrieved += lst.Count;
+                        //}
+                        //Trace.WriteLine($"Retrieve all objs from all types {objsRetrieved} Objs/Sec = {objsRetrieved / sw.Elapsed.TotalSeconds:n2}"); // 5k/sec");
 
 
                         Trace.WriteLine($"Server Logs: " + await oop.ClientSendVerbAsync(Verbs.GetLog, null));
@@ -725,7 +747,6 @@ enumtype ClrType214
 
         internal async Task SendObjectsAndTypesAsync(ClrUtil clrUtil, OutOfProc outOfProc)
         {
-            await outOfProc.ClientSendVerbAsync(Verbs.CreateSharedMemSection, 2 * 65536u);
             uint typeIdNext = 0;
             var bufChunkSize = outOfProc._sharedMapSize - 8; // room for null term
             var numChunksSent = 0;
@@ -817,7 +838,6 @@ enumtype ClrType214
                 await SendBufferAsync(Verbs.SendTypeIdAndTypeNameInChunks);
             }
             // now that we've sent all the data, let the server know and calculate the various data structures required
-            await outOfProc.ClientSendVerbAsync(Verbs.CloseSharedMemSection, 0);
             await outOfProc.ClientSendVerbAsync(Verbs.ObjsAndTypesDoneSending, 0);
 
             async Task SendBufferAsync(Verbs verb)

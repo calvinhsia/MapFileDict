@@ -28,8 +28,8 @@ namespace MapFileDict
         public PortableExecutableKinds portableExecutableKinds = PortableExecutableKinds.PE32Plus;
         public ImageFileMachine imageFileMachine = ImageFileMachine.AMD64;
         public string AdditionalAssemblyPaths = string.Empty;
-        public int TimeoutSecsPipeOp = 4;
         public bool ServerTraceLogging = true;
+        public uint SizeOfSharedMemory = 65536u;
         /// <summary>
         /// Unit tests start/stop the OOP server very quickly: we don't want to use the same pipe name, because it's a race condition
         /// </summary>
@@ -50,7 +50,6 @@ namespace MapFileDict
         MemoryMappedViewAccessor _MemoryMappedFileViewForSharedRegion;
         public IntPtr _MemoryMappedRegionAddress;// the address of the shared region. Will probably be different for client and for server
         public int pidClient => Options.PidClient;
-        public int TimeoutSecsPipeOp => Options.TimeoutSecsPipeOp;
         protected MyTraceListener mylistener;
         public Process ProcServer { get; set; } // only if out of proc
         public Task DoServerLoopTask; // the loop that listens for the pipe and executes verbs
