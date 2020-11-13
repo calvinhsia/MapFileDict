@@ -460,8 +460,6 @@ namespace MapFileDict
                             }
                             lstObjs.Add(objToTypeItem.Key);
                         }
-                        var clrtype1 = dictTypeToObjList["ClrType1"].Count;
-                        Trace.WriteLine($"Server ClrType1 {clrtype1}");
                         Trace.WriteLine($"Server has dictTypeToObjList {dictTypeToObjList.Count}");
                     });
                     await PipeFromServer.WriteAcknowledgeAsync();

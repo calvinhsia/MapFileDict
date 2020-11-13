@@ -80,7 +80,10 @@ namespace MapFileDict
             }
             this.Options = options;
             this.token = token;
-            this.Options.NamedPipeName = $"MapFileDictPipe_{pidClient}" + options.NamedPipeAddString;
+            if (string.IsNullOrEmpty(this.Options.NamedPipeName))
+            {
+                this.Options.NamedPipeName = $"MapFileDictPipe_{pidClient}" + options.NamedPipeAddString;
+            }
             if (Process.GetCurrentProcess().Id == options.PidClient) //we're the client process?
             {
                 PipeFromClient = new NamedPipeClientStream(
