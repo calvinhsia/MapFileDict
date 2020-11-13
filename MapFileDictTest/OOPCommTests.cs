@@ -260,7 +260,7 @@ Children of "<- System.IO.MemoryMappedFiles.MemoryMappedViewAccessor  120cd2dc"
                      int numObjs = tup.Item1;
                      var numChunksSent = tup.Item2;
                      // the timing includes parsing the text file for obj graph
-                     Trace.WriteLine($"Sent {numObjs}  #Chunks = {numChunksSent} Objs/Sec = {numObjs / sw.Elapsed.TotalSeconds:n2}"); // 5k/sec
+                     Trace.WriteLine($"ObjRefGraph Sent {numObjs}  #Chunks = {numChunksSent} Objs/Sec = {numObjs / sw.Elapsed.TotalSeconds:n2}"); // 5k/sec
 
                      await oop.ClientSendVerbAsync(Verbs.CreateInvertedObjRefDictionary, null);
                      Trace.WriteLine($"Inverted Dictionary");
@@ -307,7 +307,7 @@ IntPtr.Size = 8 Creating Shared Memory region
                         int numObjs = tup.Item1;
                         var numChunksSent = tup.Item2;
                         // the timing includes parsing the text file for obj graph
-                        Trace.WriteLine($"Sent {numObjs}  #Chunks = {numChunksSent} Objs/Sec = {numObjs / sw.Elapsed.TotalSeconds:n2}"); // 5k/sec
+                        Trace.WriteLine($"ObjRefGraph Sent {numObjs}  #Chunks = {numChunksSent} Objs/Sec = {numObjs / sw.Elapsed.TotalSeconds:n2}"); // 5k/sec
 
                         await oop.ClientSendVerbAsync(Verbs.CreateInvertedObjRefDictionary, null);
                         Trace.WriteLine($"Inverted Dictionary");
@@ -627,13 +627,12 @@ Server: Getlog #entries
         public async Task OOPTestSendObjsAndTypes()
         {
             var cts = new CancellationTokenSource();
-            using (var oop = new OutOfProc(
-                new OutOfProcOptions()
-                {
-                    CreateServerOutOfProc = false,
-                    SizeOfSharedMemory = 65536u * 1
-                },
-                cts.Token))
+            var opts = new OutOfProcOptions()
+            {
+                CreateServerOutOfProc = true,
+                SizeOfSharedMemory = 65536u * 1
+            };
+            using (var oop = new OutOfProc(opts, cts.Token))
             {
                 Task taskServerDone;
                 if (!oop.Options.CreateServerOutOfProc)
@@ -645,7 +644,6 @@ Server: Getlog #entries
                     taskServerDone = Task.Delay(100);
                 }
 
-                Trace.WriteLine("Starting Client");
                 {
                     try
                     {
@@ -655,7 +653,7 @@ Server: Getlog #entries
                         var sw = Stopwatch.StartNew();
                         var clrUtil = new ClrUtil(numObjsToSend, oop);
                         await SendObjectsAndTypesAsync(clrUtil, oop);
-                        Trace.WriteLine($"Sent {numObjsToSend:n0}  Objs/Sec = {numObjsToSend / sw.Elapsed.TotalSeconds:n2}"); // 5k/sec
+                        Trace.WriteLine($"ObjsAndTypes Sent {numObjsToSend:n0}  Objs/Sec = {numObjsToSend / sw.Elapsed.TotalSeconds:n2}"); // 5k/sec
                         async Task ShowObjsAsync(string typeName, uint maxNumObjs = 0)
                         {
                             var lstObjs = await clrUtil.GetObjectsOfType(typeName, maxNumObjs);
@@ -674,7 +672,9 @@ Server: Getlog #entries
                         {
                             Trace.WriteLine($"enumtype {type}");
                         }
+                        sw.Restart();
                         var totcnt = clrUtil.EnumerateObjectTypes("").Count();
+                        Trace.WriteLine($"EnumerateObjectTypes #Types={totcnt:n0}  Types/Sec = {totcnt / sw.Elapsed.TotalSeconds:n2}"); // 5k/sec
                         Trace.WriteLine($"# of all types = {totcnt}");
                         var cnt = clrUtil.EnumerateObjectTypes("nonefound.*").Count();
                         Trace.WriteLine($"# of 'nonefound' types = {cnt}");
@@ -695,15 +695,15 @@ Server: Getlog #entries
                             Trace.WriteLine($" Types&Counts {itm.Item2}  {itm.Item1}");
                         }
 
-                        //// let's time getting all types and all objs
-                        //sw.Restart();
-                        //var objsRetrieved = 0;
-                        //foreach (var itm in (List<Tuple<string, uint>>)await oop.ClientSendVerbAsync(Verbs.GetTypesAndCounts, 0))
-                        //{
-                        //    var lst = (List<uint>)await oop.ClientSendVerbAsync(Verbs.GetObjsOfType, Tuple.Create(itm.Item1, 0u));
-                        //    objsRetrieved += lst.Count;
-                        //}
-                        //Trace.WriteLine($"Retrieve all objs from all types {objsRetrieved} Objs/Sec = {objsRetrieved / sw.Elapsed.TotalSeconds:n2}"); // 5k/sec");
+                        // let's time getting all types and all objs
+                        sw.Restart();
+                        var objsRetrieved = 0;
+                        foreach (var itm in (List<Tuple<string, uint>>)await oop.ClientSendVerbAsync(Verbs.GetTypesAndCounts, 0))
+                        {
+                            var lst = (List<uint>)await oop.ClientSendVerbAsync(Verbs.GetObjsOfType, Tuple.Create(itm.Item1, 0u));
+                            objsRetrieved += lst.Count;
+                        }
+                        Trace.WriteLine($"Retrieve all objs from all types {objsRetrieved} Objs/Sec = {objsRetrieved / sw.Elapsed.TotalSeconds:n2}"); // 5k/sec");
 
 
                         Trace.WriteLine($"Server Logs: " + await oop.ClientSendVerbAsync(Verbs.GetLog, null));
@@ -744,6 +744,7 @@ enumtype ClrType214
 # of all types = 2710
 # of 'nonefound' types = 0
 ");
+            Assert.IsTrue(opts.CreateServerOutOfProc);
         }
 
         internal async Task SendObjectsAndTypesAsync(ClrUtil clrUtil, OutOfProc outOfProc)
@@ -776,17 +777,12 @@ enumtype ClrType214
                 }
                 numObjs++;
             }
-            var actualnumberClrType1 = 0;
             foreach (var objAddr in clrUtil._heap.EnumerateObjectAddresses())
             {
                 ClrType type = null;
                 try
                 {
                     type = clrUtil._heap.GetObjectType(objAddr);
-                    if (type.Name == "ClrType1")
-                    {
-                        actualnumberClrType1++;
-                    }
                 }
                 catch (Exception ex)
                 {
@@ -810,8 +806,7 @@ enumtype ClrType214
             {
                 await SendBufferAsync(Verbs.SendObjAndTypeIdInChunks);
             }
-            Trace.WriteLine($"Actual#ClrType1={actualnumberClrType1}");
-            Trace.WriteLine($"Client sent # objs= {numObjs:n0} # chunks = {numChunksSent}");
+            clrUtil.LogString($"Client sent # objs= {numObjs:n0}  ChunkSize={bufChunkSize:n0} # chunks = {numChunksSent}");
             // now we send type names and Ids as series of UINT ID, UINT nameLen, byte[namelen]
             var numTypes = 0;
             numChunksSent = 0;
@@ -856,6 +851,10 @@ enumtype ClrType214
                 }
                 await outOfProc.ClientSendVerbAsync(verb, 0);
                 numChunksSent++;
+                if (numChunksSent % 100 == 0)
+                {
+//                    clrUtil.LogString($"Client sent {verb} chunk {numChunksSent}");
+                }
             }
         }
         public class ClrUtil
@@ -881,7 +880,7 @@ enumtype ClrType214
                     this.numObjsToSend = numObjsToSend;
                     for (int i = 0; i < numClrTypes; i++)
                     {
-                        var tname = $"ClrType{i% 1710}";
+                        var tname = $"ClrType{i % 1710}";
                         if (i % 1500 == 0)
                         {
                             tname = @"Microsoft.VisualStudio.Text.BufferUndoManager.Implementation.TextBufferUndoManager";
