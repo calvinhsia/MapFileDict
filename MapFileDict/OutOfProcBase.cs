@@ -223,7 +223,7 @@ namespace MapFileDict
                     options: PipeOptions.Asynchronous
                     );
                 {
-                    Trace.WriteLine($"Server: wait for connection IntPtr.Size={IntPtr.Size}");
+                    Trace.WriteLine($"Server: wait for connection IntPtr.Size={IntPtr.Size} {Options.NamedPipeName}");
                     await PipeFromServer.WaitForConnectionAsync(token);
                     Trace.WriteLine($"Server: connected");
                     var receivedQuit = false;
@@ -253,7 +253,6 @@ namespace MapFileDict
                                 }
                                 else
                                 {
-                                    Trace.WriteLine($"Received unknown Verb: this indicates a violation of pipe communications. Comm is broken, so terminating");
                                     throw new Exception($"Received unknown Verb {verb}");
                                 }
                             }
@@ -261,6 +260,10 @@ namespace MapFileDict
                             {
                                 Trace.WriteLine($"Exception: terminating process: " + ex.ToString());
                                 mylistener?.ForceAddToLog(ex.ToString());
+#if DEBUG
+                                MessageBox(0, $"Server exception " + ex.ToString(), 
+                                    $"{Process.GetCurrentProcess().ProcessName} {Process.GetCurrentProcess().Id} {Options.NamedPipeName}", 0);
+#endif
                                 if (pidClient != Process.GetCurrentProcess().Id)
                                 {
                                     Environment.Exit(0);

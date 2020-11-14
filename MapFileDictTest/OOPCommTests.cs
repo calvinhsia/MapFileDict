@@ -554,6 +554,74 @@ Server: Getlog #entries
                 }
             }
         }
+
+        [TestMethod]
+        public async Task OOPMultiConnect()
+        {
+            var cts = new CancellationTokenSource();
+            var numIter = 10;
+            for (int i = 0; i < numIter; i++)
+            {
+                var oop = new OutOfProc(
+                    new OutOfProcOptions()
+                    {
+                        CreateServerOutOfProc = true,
+                        NamedPipeAddString=$"_{i}"
+                    },
+                    cts.Token);
+                {
+                    Task taskServerDone;
+                    if (!oop.Options.CreateServerOutOfProc)
+                    {
+                        taskServerDone = oop.DoServerLoopTask;
+                    }
+                    else
+                    {
+                        taskServerDone = Task.Delay(100);
+                    }
+
+                    Trace.WriteLine("Starting Client");
+                    {
+                        try
+                        {
+                            await oop.ConnectToServerAsync(cts.Token);
+
+                            var strbig = (string)await oop.ClientSendVerbAsync(Verbs.GetStringSharedMem, 0);
+                            Trace.Write($"Got big string Len = {strbig.Length} " + strbig);
+
+                            Trace.WriteLine($"Server Logs: " + await oop.ClientSendVerbAsync(Verbs.GetLog, null));
+                            Trace.WriteLine("Client: sending quit");
+                            await oop.ClientSendVerbAsync(Verbs.ServerQuit, null);
+                        }
+                        catch (Exception ex)
+                        {
+                            Trace.WriteLine(ex.ToString());
+                            throw;
+                        }
+                    }
+
+                    var nDelaySecs = Debugger.IsAttached ? 3000 : 20;
+                    var tskDelay = Task.Delay(TimeSpan.FromSeconds(nDelaySecs));
+                    await Task.WhenAny(new[] { tskDelay, taskServerDone });
+                    if (tskDelay.IsCompleted)
+                    {
+                        Trace.WriteLine($"Delay {nDelaySecs} secs completed: cancelling server");
+                        cts.Cancel();
+                    }
+                    Trace.WriteLine($"Done");
+                    if (!oop.Options.CreateServerOutOfProc)
+                    {
+                        await oop.DoServerLoopTask;
+                        Assert.IsTrue(oop.DoServerLoopTask.IsCompleted);
+                    }
+                }
+                oop.Dispose();
+                Assert.IsTrue(oop.ProcServer.HasExited);
+
+            }
+        }
+
+
         [TestMethod]
         public async Task OOPCreateServerConstantExe()
         {
