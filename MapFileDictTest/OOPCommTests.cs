@@ -823,7 +823,7 @@ enumtype ClrType214
             var numObjs = 0;
             int ndxbufChunk = 0; // count of UINTs
             Dictionary<ClrType, uint> dictClrTypeToTypeId = new Dictionary<ClrType, uint>();  // client side: ClrType to TypeId
-            async Task AddObjAsync(uint obj, ClrType type)
+            async Task AddObjAsync(uint obj, ClrType type, uint objSize)
             {
                 if (!dictClrTypeToTypeId.TryGetValue(type, out var typeId))
                 {
@@ -842,6 +842,7 @@ enumtype ClrType214
                     var ptr = (uint*)outOfProc._MemoryMappedRegionAddress;
                     ptr[ndxbufChunk++] = obj;
                     ptr[ndxbufChunk++] = typeId;
+//                    ptr[ndxbufChunk++] = objSize;
                 }
                 numObjs++;
             }
@@ -859,14 +860,16 @@ enumtype ClrType214
                 }
                 if (type != null) // corrupt heap can cause null
                 {
-                    await AddObjAsync((uint)objAddr, type);
+                    var objSize = 1u;
+                    await AddObjAsync((uint)objAddr, type, objSize);
                 }
             }
             foreach (var root in clrUtil._heap.EnumerateRoots(enumerateStatics: true)) // could yield dupes
             {
                 if (root.Type != null)
                 {
-                    await AddObjAsync((uint)root.Object, root.Type);
+                    var objSize = 1u;
+                    await AddObjAsync((uint)root.Object, root.Type, objSize);
                 }
             }
             // now we send leftover chunk

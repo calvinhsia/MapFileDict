@@ -14,6 +14,7 @@ namespace MapFileDict
 {
     public enum Verbs
     {
+        PipeBroken = -1, //indicates end of stream (pipe closed): e.g. client process killed
         EstablishConnection, // Handshake the version of the connection
         GetLastError, // get the last error from the server. Will be reset to ""
         ServerQuit, // Quit the server process. Sends an Ack, so must wait for ack before done
@@ -51,13 +52,14 @@ namespace MapFileDict
         public static uint ConnectionVersion = 1;
         public string LastError = string.Empty;
 
-        readonly Dictionary<uint, string> dictTypeIdToTypeName = new Dictionary<uint, string>(); // typeId to TypeName
-        Dictionary<uint, uint> dictObjToTypeId = new Dictionary<uint, uint>();
-        //Dictionary<uint, string> dictObjToType = new Dictionary<uint, string>(); // from objId to TypeName
-        Dictionary<string, List<uint>> dictTypeToObjList = new Dictionary<string, List<uint>>(); // TypeName to List<objs>
+        Dictionary<uint, string> dictTypeIdToTypeName = new Dictionary<uint, string>(); // server: temp typeId to TypeName
+        Dictionary<uint, uint> dictObjToTypeId = new Dictionary<uint, uint>(); // server: temporary: used to transfer objs and their types
 
-        Dictionary<uint, List<uint>> dictObjToRefs = new Dictionary<uint, List<uint>>();
-        Dictionary<uint, List<uint>> dictObjToParents = null;
+        Dictionary<string, List<uint>> dictTypeToObjList = new Dictionary<string, List<uint>>(); // server: TypeName to List<objs>
+
+        Dictionary<uint, List<uint>> dictObjToRefs = new Dictionary<uint, List<uint>>(); // server
+        Dictionary<uint, List<uint>> dictObjToParents = null; // server: created from inverting dictObjToRefs
+
         private Task taskCreateDictionariesForSentObjects;
         private Task taskCreateInvertedObjRefDictionary;
         private Dictionary<string, List<uint>>.KeyCollection.Enumerator _enumeratorDictTypes;
@@ -407,6 +409,7 @@ namespace MapFileDict
                                 break;
                             }
                             var typeId = ptr[bufNdx++];
+//                            var objSize = ptr[bufNdx++];
                             dictObjToTypeId[obj] = typeId;
                         }
                     }
@@ -467,6 +470,7 @@ namespace MapFileDict
                             lstObjs.Add(objToTypeItem.Key);
                         }
                         dictObjToTypeId = null;// don't neeed it any more: it's huge
+                        dictTypeIdToTypeName = null;
                         Trace.WriteLine($"Server has dictTypeToObjList {dictTypeToObjList.Count}");
                     });
                     await PipeFromServer.WriteAcknowledgeAsync();

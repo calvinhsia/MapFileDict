@@ -239,11 +239,11 @@ namespace MapFileDict
                                     Trace.WriteLine("server: got cancel");
                                     receivedQuit = true;
                                 }
-                                var verbRaw = PipeFromServer.ReadByte(); // when reading verb, we don't want timeout because client initiated calls can occur any time
-                                Verbs verb=(Verbs)verbRaw;
-                                if (verbRaw == -1) //indicates end of stream (pipe closed): e.g. client process killed
+                                var verb = (Verbs)PipeFromServer.ReadByte(); // when reading verb, we don't want timeout because client initiated calls can occur any time
+                                if (verb == Verbs.PipeBroken) 
                                 {
-                                    verb = Verbs.ServerQuit;
+                                    receivedQuit = true;
+                                    break;
                                 }
                                 if (_dictVerbs.ContainsKey(verb))
                                 {
