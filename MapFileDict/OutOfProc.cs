@@ -149,7 +149,13 @@ namespace MapFileDict
                      {
                          Trace.WriteLine($"# dictObjRef = {dictObjToRefs.Count}");
                      }
-                     await PipeFromServer.WriteAcknowledgeAsync();
+                     try
+                     {
+                         await PipeFromServer.WriteAcknowledgeAsync(); // pipe could be broken
+                     }
+                     catch (System.IO.IOException)
+                     {
+                     }
                      return Verbs.ServerQuit; // tell the server loop to quit
                  });
 

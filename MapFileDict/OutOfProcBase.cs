@@ -239,7 +239,12 @@ namespace MapFileDict
                                     Trace.WriteLine("server: got cancel");
                                     receivedQuit = true;
                                 }
-                                var verb = (Verbs)PipeFromServer.ReadByte(); // when reading verb, we don't want timeout because client initiated calls can occur any time
+                                var verbRaw = PipeFromServer.ReadByte(); // when reading verb, we don't want timeout because client initiated calls can occur any time
+                                Verbs verb=(Verbs)verbRaw;
+                                if (verbRaw == -1) //indicates end of stream (pipe closed): e.g. client process killed
+                                {
+                                    verb = Verbs.ServerQuit;
+                                }
                                 if (_dictVerbs.ContainsKey(verb))
                                 {
                                     var res = await ServerDoVerbAsync(verb, null);
@@ -261,7 +266,7 @@ namespace MapFileDict
                                 Trace.WriteLine($"Exception: terminating process: " + ex.ToString());
                                 mylistener?.ForceAddToLog(ex.ToString());
 #if DEBUG
-                                MessageBox(0, $"Server exception " + ex.ToString(), 
+                                MessageBox(0, $"Server exception " + ex.ToString(),
                                     $"{Process.GetCurrentProcess().ProcessName} {Process.GetCurrentProcess().Id} {Options.NamedPipeName}", 0);
 #endif
                                 if (pidClient != Process.GetCurrentProcess().Id)
@@ -296,7 +301,7 @@ namespace MapFileDict
             Trace.WriteLine("Server: exiting servertask");
         }
 
-        public bool ClientAndServerInSameProcess => ProcServer == null;
+        public bool ClientAndServerInSameProcess => !Options.CreateServerOutOfProc;
         /// <summary>
         /// Called from both client and server. Given a name, creates memory region of specified size (mult 64k) that can be addressed by each process
         /// </summary>
