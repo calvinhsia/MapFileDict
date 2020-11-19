@@ -308,6 +308,8 @@ namespace MapFileDict
             }
             _sharedFileMapName = memRegionName;
 
+            //var extraMemNeeeded = regionSize % MemMap.AllocationGranularity;
+            //var actualSize = regionSize + extraMemNeeeded; 
             _sharedMapSize = regionSize;
             _MemoryMappedFileForSharedRegion = MemoryMappedFile.CreateOrOpen(
                mapName: _sharedFileMapName,

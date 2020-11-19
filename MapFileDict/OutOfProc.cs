@@ -147,7 +147,7 @@ namespace MapFileDict
                  {
                      if (ClientAndServerInSameProcess) // if same process, GetLog from server not called
                      {
-                         Trace.WriteLine($"#dictObjToTypeId = {dictObjToTypeId.Count}  # dictObjRef = {dictObjToRefs.Count}");
+                         Trace.WriteLine($"# dictObjRef = {dictObjToRefs.Count}");
                      }
                      await PipeFromServer.WriteAcknowledgeAsync();
                      return Verbs.ServerQuit; // tell the server loop to quit
@@ -166,7 +166,7 @@ namespace MapFileDict
                     var strlog = string.Empty;
                     if (mylistener != null)
                     {
-                        Trace.WriteLine($"#dictObjToTypeId = {dictObjToTypeId.Count}  # dictObjRef = {dictObjToRefs.Count}");
+                        Trace.WriteLine($"# dictObjRef = {dictObjToRefs.Count}");
                         Trace.WriteLine($"Server: Getlog #entries = {mylistener.lstLoggedStrings.Count}");
                         strlog = string.Join("\r\n   ", mylistener.lstLoggedStrings);
                         mylistener.lstLoggedStrings.Clear();
@@ -460,6 +460,7 @@ namespace MapFileDict
                             }
                             lstObjs.Add(objToTypeItem.Key);
                         }
+                        dictObjToTypeId = null;// don't neeed it any more: it's huge
                         Trace.WriteLine($"Server has dictTypeToObjList {dictTypeToObjList.Count}");
                     });
                     await PipeFromServer.WriteAcknowledgeAsync();
