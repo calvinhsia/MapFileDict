@@ -566,7 +566,7 @@ Server: Getlog #entries
                     new OutOfProcOptions()
                     {
                         CreateServerOutOfProc = true,
-                        NamedPipeAddString=$"_{i}"
+                        NamedPipeAddString = $"_{i}"
                     },
                     cts.Token);
                 {
@@ -729,7 +729,7 @@ Server: Getlog #entries
 
                             foreach (var obj in lstObjs.Take(5))
                             {
-                                Trace.WriteLine($"  {typeName} {obj:x8}");
+                                Trace.WriteLine($"  {typeName} {obj.Item1:x8} size={obj.Item2}");
                             }
                         }
                         await ShowObjsAsync("ClrType1");
@@ -766,9 +766,11 @@ Server: Getlog #entries
                         // let's time getting all types and all objs
                         sw.Restart();
                         var objsRetrieved = 0;
-                        foreach (var itm in (List<Tuple<string, uint>>)await oop.ClientSendVerbAsync(Verbs.GetTypesAndCounts, 0))
+                        var totsize = 0;
+                        var typesAndCounts = (List<Tuple<string, uint>>)await oop.ClientSendVerbAsync(Verbs.GetTypesAndCounts, 0);
+                        foreach (var itm in typesAndCounts)
                         {
-                            var lst = (List<uint>)await oop.ClientSendVerbAsync(Verbs.GetObjsOfType, Tuple.Create(itm.Item1, 0u));
+                            var lst = (List<Tuple<uint, uint>>)await oop.ClientSendVerbAsync(Verbs.GetObjsOfType, Tuple.Create(itm.Item1, 0u));
                             objsRetrieved += lst.Count;
                         }
                         Trace.WriteLine($"Retrieve all objs from all types {objsRetrieved} Objs/Sec = {objsRetrieved / sw.Elapsed.TotalSeconds:n2}"); // 5k/sec");
@@ -802,11 +804,11 @@ Server: Getlog #entries
             }
             VerifyLogStrings(@"
 #Objs of ClrType1 6667
-ClrType1 00000001
-ClrType1 000006af
+ClrType1 00000001 size=1
+ClrType1 000006af size=111
 #Objs of ClrType2 5
-ClrType2 00000002
-ClrType2 000006b0
+ClrType2 00000002 size=2
+ClrType2 000006b0 size=112
 #Objs of NonExistentType 0
 enumtype ClrType214
 # of all types = 2710
@@ -842,7 +844,7 @@ enumtype ClrType214
                     var ptr = (uint*)outOfProc._MemoryMappedRegionAddress;
                     ptr[ndxbufChunk++] = obj;
                     ptr[ndxbufChunk++] = typeId;
-//                    ptr[ndxbufChunk++] = objSize;
+                    ptr[ndxbufChunk++] = objSize;
                 }
                 numObjs++;
             }
@@ -860,7 +862,7 @@ enumtype ClrType214
                 }
                 if (type != null) // corrupt heap can cause null
                 {
-                    var objSize = 1u;
+                    var objSize = (uint)objAddr % 200;
                     await AddObjAsync((uint)objAddr, type, objSize);
                 }
             }
@@ -868,7 +870,7 @@ enumtype ClrType214
             {
                 if (root.Type != null)
                 {
-                    var objSize = 1u;
+                    var objSize = (uint)root.Object % 100;
                     await AddObjAsync((uint)root.Object, root.Type, objSize);
                 }
             }
@@ -924,7 +926,7 @@ enumtype ClrType214
                 numChunksSent++;
                 if (numChunksSent % 100 == 0)
                 {
-//                    clrUtil.LogString($"Client sent {verb} chunk {numChunksSent}");
+                    //                    clrUtil.LogString($"Client sent {verb} chunk {numChunksSent}");
                 }
             }
         }
@@ -994,9 +996,9 @@ enumtype ClrType214
                 return x;
             }
 
-            internal async Task<List<uint>> GetObjectsOfType(string typeName, uint maxNumObjs = 0)
+            internal async Task<List<Tuple<uint,uint>>> GetObjectsOfType(string typeName, uint maxNumObjs = 0)
             {
-                var lstRaw = (List<uint>)await _outOfProc.ClientSendVerbAsync(Verbs.GetObjsOfType, Tuple.Create(typeName, maxNumObjs));
+                var lstRaw = (List<Tuple<uint,uint>>)await _outOfProc.ClientSendVerbAsync(Verbs.GetObjsOfType, Tuple.Create(typeName, maxNumObjs));
                 return lstRaw;
             }
         }

@@ -52,17 +52,20 @@ namespace MapFileDict
         public static uint ConnectionVersion = 1;
         public string LastError = string.Empty;
 
+        // these dictionaries live in the server. Some are temp
         Dictionary<uint, string> dictTypeIdToTypeName = new Dictionary<uint, string>(); // server: temp typeId to TypeName
-        Dictionary<uint, uint> dictObjToTypeId = new Dictionary<uint, uint>(); // server: temporary: used to transfer objs and their types
+        Dictionary<uint, Tuple<uint, uint>> dictObjToTypeIdAndSize = new Dictionary<uint, Tuple<uint, uint>>(); // server: temporary: obj to Tuple<TypeId, Size> used to transfer objs and their types
 
-        Dictionary<string, List<uint>> dictTypeToObjList = new Dictionary<string, List<uint>>(); // server: TypeName to List<objs>
+        Dictionary<string, List<Tuple<uint, uint>>> dictTypeToObjAndSizeList = new Dictionary<string, List<Tuple<uint, uint>>>(); // server: TypeName to List<objs>
 
-        Dictionary<uint, List<uint>> dictObjToRefs = new Dictionary<uint, List<uint>>(); // server
-        Dictionary<uint, List<uint>> dictObjToParents = null; // server: created from inverting dictObjToRefs
+        Dictionary<uint, List<uint>> dictObjToRefs = new Dictionary<uint, List<uint>>(); // server: obj=> list<objs referenced by obj>
+        Dictionary<uint, List<uint>> dictObjToParents = null; // server: created from inverting dictObjToRefs. obj=>List<objs that reference obj>
+
+
 
         private Task taskCreateDictionariesForSentObjects;
         private Task taskCreateInvertedObjRefDictionary;
-        private Dictionary<string, List<uint>>.KeyCollection.Enumerator _enumeratorDictTypes;
+        private Dictionary<string, List<Tuple<uint, uint>>>.KeyCollection.Enumerator _enumeratorDictTypes;
         private string _strRegExFilterTypes;
 
         public OutOfProc()
@@ -409,8 +412,8 @@ namespace MapFileDict
                                 break;
                             }
                             var typeId = ptr[bufNdx++];
-//                            var objSize = ptr[bufNdx++];
-                            dictObjToTypeId[obj] = typeId;
+                            var objSize = ptr[bufNdx++];
+                            dictObjToTypeIdAndSize[obj] = Tuple.Create(typeId, objSize);
                         }
                     }
                     await PipeFromServer.WriteAcknowledgeAsync();
@@ -459,19 +462,19 @@ namespace MapFileDict
                 {
                     this.taskCreateDictionariesForSentObjects = Task.Run(() =>
                     {
-                        foreach (var objToTypeItem in dictObjToTypeId)
+                        foreach (var objToTypeAndSizeItem in dictObjToTypeIdAndSize)
                         {
-                            var typeName = dictTypeIdToTypeName[objToTypeItem.Value];
-                            if (!dictTypeToObjList.TryGetValue(typeName, out var lstObjs))
+                            var typeName = dictTypeIdToTypeName[objToTypeAndSizeItem.Value.Item1];
+                            if (!dictTypeToObjAndSizeList.TryGetValue(typeName, out var lstObjs))
                             {
-                                lstObjs = new List<uint>();
-                                dictTypeToObjList[typeName] = lstObjs;
+                                lstObjs = new List<Tuple<uint, uint>>(); // list(obj, size)
+                                dictTypeToObjAndSizeList[typeName] = lstObjs;
                             }
-                            lstObjs.Add(objToTypeItem.Key);
+                            lstObjs.Add(Tuple.Create(objToTypeAndSizeItem.Key, objToTypeAndSizeItem.Value.Item2)); // obj and size
                         }
-                        dictObjToTypeId = null;// don't neeed it any more: it's huge
+                        dictObjToTypeIdAndSize = null;// don't neeed it any more: it's huge
                         dictTypeIdToTypeName = null;
-                        Trace.WriteLine($"Server has dictTypeToObjList {dictTypeToObjList.Count}");
+                        Trace.WriteLine($"Server has dictTypeToObjList {dictTypeToObjAndSizeList.Count}");
                     });
                     await PipeFromServer.WriteAcknowledgeAsync();
                     return null;
@@ -490,7 +493,7 @@ namespace MapFileDict
                     await PipeFromServer.WriteAcknowledgeAsync();
                     _strRegExFilterTypes = await PipeFromServer.ReadStringAsAsciiAsync();
                     await taskCreateDictionariesForSentObjects;
-                    _enumeratorDictTypes = dictTypeToObjList.Keys.GetEnumerator();
+                    _enumeratorDictTypes = dictTypeToObjAndSizeList.Keys.GetEnumerator();
                     var fGotOne = false;
                     while (_enumeratorDictTypes.MoveNext())
                     {
@@ -558,7 +561,7 @@ namespace MapFileDict
                 {
                     await PipeFromServer.WriteAcknowledgeAsync();
                     await taskCreateDictionariesForSentObjects;
-                    foreach (var kvp in dictTypeToObjList.OrderByDescending(k => k.Value.Count))
+                    foreach (var kvp in dictTypeToObjAndSizeList.OrderByDescending(k => k.Value.Count))
                     {
                         await PipeFromServer.WriteUInt32((uint)kvp.Value.Count);
                         await PipeFromServer.WriteStringAsAsciiAsync(kvp.Key);
@@ -609,11 +612,11 @@ namespace MapFileDict
             AddVerb(Verbs.GetObjsOfType,
                 actClientSendVerb: async (arg) =>
                 {
-                    var tup = (Tuple<string, uint>)arg;
+                    var tup = (Tuple<string, uint>)arg; // typename, maxnumToReturn
                     await PipeFromClient.WriteVerbAsync(Verbs.GetObjsOfType);
                     await PipeFromClient.WriteUInt32(tup.Item2); // max: sometimes we only want 1 object of the class to get the ClrType (e.g. EventHandlers)
                     await PipeFromClient.WriteStringAsAsciiAsync(tup.Item1);
-                    var lstObjs = new List<uint>();
+                    var lstObjs = new List<Tuple<uint, uint>>(); // obj, size
                     while (true)
                     {
                         var bufsize = await PipeFromClient.ReadUInt32();
@@ -621,7 +624,7 @@ namespace MapFileDict
                         {
                             break;
                         }
-                        for (int i = 0; i < bufsize; i++)
+                        for (int i = 0; i < bufsize; i += 2)
                         {
                             unsafe
                             {
@@ -631,7 +634,8 @@ namespace MapFileDict
                                 {
                                     throw new InvalidOperationException("Null obj");
                                 }
-                                lstObjs.Add(obj);
+                                var size = ptr[i + 1];
+                                lstObjs.Add(Tuple.Create(obj,size));
                             }
                         }
                         await PipeFromClient.WriteAcknowledgeAsync(); // got this chunk
@@ -647,7 +651,7 @@ namespace MapFileDict
                     int cnt = 0;
                     var bufChunkSize = _sharedMapSize - 4;// leave extra room for null term
                     var bufNdx = 0U;
-                    if (dictTypeToObjList.TryGetValue(strType, out var lstObjs))
+                    if (dictTypeToObjAndSizeList.TryGetValue(strType, out var lstObjs))
                     {
                         foreach (var obj in lstObjs)
                         {
@@ -660,7 +664,8 @@ namespace MapFileDict
                             unsafe
                             {
                                 var ptr = (uint*)_MemoryMappedRegionAddress;
-                                ptr[bufNdx++] = obj;
+                                ptr[bufNdx++] = obj.Item1; // obj
+                                ptr[bufNdx++] = obj.Item2; //size
                             }
                             cnt++;
                             if (maxnumobjs != 0 && cnt == maxnumobjs)
