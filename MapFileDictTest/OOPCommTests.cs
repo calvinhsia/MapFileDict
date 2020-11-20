@@ -690,6 +690,35 @@ Server: Getlog #entries
             }
         }
 
+        [TestMethod]
+        public void OOPTestDictOrder()
+        {
+            Dictionary<string, List<Tuple<uint, uint>>> dictTypeToObjAndSizeList = new Dictionary<string, List<Tuple<uint, uint>>>(); // server: TypeName to List<objs>
+            try
+            {
+                int nObjs = 100000;
+                for (int i = 0; i < nObjs; i++)
+                {
+                    var lst = new List<Tuple<uint, uint>>();
+                    for (uint k = 0; k < 10; k++)
+                    {
+                        lst.Add(Tuple.Create(k, 10 * k));
+                    }
+                    dictTypeToObjAndSizeList[$"type{i}"] = lst;
+                }
+                foreach (var typeTuple in dictTypeToObjAndSizeList.OrderByDescending(k => k.Value.Sum(t => t.Item2)))
+                {
+
+                }
+                Trace.WriteLine($"done");
+
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($"exception " + ex.ToString());
+            }
+
+        }
 
         [TestMethod]
         public async Task OOPTestSendObjsAndTypes()
@@ -722,6 +751,18 @@ Server: Getlog #entries
                         var clrUtil = new ClrUtil(numObjsToSend, oop);
                         await SendObjectsAndTypesAsync(clrUtil, oop);
                         Trace.WriteLine($"ObjsAndTypes Sent {numObjsToSend:n0}  Objs/Sec = {numObjsToSend / sw.Elapsed.TotalSeconds:n2}"); // 5k/sec
+
+
+                        var TypeSummary = (List<Tuple<string, uint, uint>>)await oop.ClientSendVerbAsync(Verbs.GetTypeSummary, 0);
+                        foreach (var tup in TypeSummary.Take(10))
+                        {
+                            Trace.WriteLine($"TSUMMARY  {tup.Item1}  {tup.Item2}  {tup.Item3}"); // type, count,size
+                        }
+
+
+
+
+
                         async Task ShowObjsAsync(string typeName, uint maxNumObjs = 0)
                         {
                             var lstObjs = await clrUtil.GetObjectsOfType(typeName, maxNumObjs);
@@ -766,7 +807,6 @@ Server: Getlog #entries
                         // let's time getting all types and all objs
                         sw.Restart();
                         var objsRetrieved = 0;
-                        var totsize = 0;
                         var typesAndCounts = (List<Tuple<string, uint>>)await oop.ClientSendVerbAsync(Verbs.GetTypesAndCounts, 0);
                         foreach (var itm in typesAndCounts)
                         {
@@ -775,8 +815,8 @@ Server: Getlog #entries
                         }
                         Trace.WriteLine($"Retrieve all objs from all types {objsRetrieved} Objs/Sec = {objsRetrieved / sw.Elapsed.TotalSeconds:n2}"); // 5k/sec");
 
-
                         Trace.WriteLine($"Server Logs: " + await oop.ClientSendVerbAsync(Verbs.GetLog, null));
+
                         Trace.WriteLine("Client: sending quit");
                         await oop.ClientSendVerbAsync(Verbs.ServerQuit, null);
                     }
@@ -813,8 +853,9 @@ ClrType2 000006b0 size=112
 enumtype ClrType214
 # of all types = 2710
 # of 'nonefound' types = 0
+TSUMMARY  ClrType199  6667  1026763
 ");
-            Assert.IsTrue(opts.CreateServerOutOfProc);
+            Assert.IsTrue(opts.CreateServerOutOfProc,"Must be out of proc when not debugging");
         }
 
         internal async Task SendObjectsAndTypesAsync(ClrUtil clrUtil, OutOfProc outOfProc)
@@ -996,9 +1037,9 @@ enumtype ClrType214
                 return x;
             }
 
-            internal async Task<List<Tuple<uint,uint>>> GetObjectsOfType(string typeName, uint maxNumObjs = 0)
+            internal async Task<List<Tuple<uint, uint>>> GetObjectsOfType(string typeName, uint maxNumObjs = 0)
             {
-                var lstRaw = (List<Tuple<uint,uint>>)await _outOfProc.ClientSendVerbAsync(Verbs.GetObjsOfType, Tuple.Create(typeName, maxNumObjs));
+                var lstRaw = (List<Tuple<uint, uint>>)await _outOfProc.ClientSendVerbAsync(Verbs.GetObjsOfType, Tuple.Create(typeName, maxNumObjs));
                 return lstRaw;
             }
         }

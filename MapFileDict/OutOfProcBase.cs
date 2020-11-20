@@ -266,8 +266,11 @@ namespace MapFileDict
                                 Trace.WriteLine($"Exception: terminating process: " + ex.ToString());
                                 mylistener?.ForceAddToLog(ex.ToString());
 #if DEBUG
-                                MessageBox(0, $"Server exception " + ex.ToString(),
-                                    $"{Process.GetCurrentProcess().ProcessName} {Process.GetCurrentProcess().Id} {Options.NamedPipeName}", 0);
+                                if (!ClientAndServerInSameProcess)
+                                {
+                                    MessageBox(0, $"Server exception " + ex.ToString(),
+                                        $"{Process.GetCurrentProcess().ProcessName} {Process.GetCurrentProcess().Id} {Options.NamedPipeName}", 0);
+                                }
 #endif
                                 if (pidClient != Process.GetCurrentProcess().Id)
                                 {

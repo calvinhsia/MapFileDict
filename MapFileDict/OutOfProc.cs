@@ -46,6 +46,7 @@ namespace MapFileDict
         GetFirstType,
         GetNextType,
         GetTypesAndCounts,
+        GetTypeSummary,
     }
     public class OutOfProc : OutOfProcBase
     {
@@ -53,7 +54,7 @@ namespace MapFileDict
         public string LastError = string.Empty;
 
         // these dictionaries live in the server. Some are temp
-        Dictionary<uint, string> dictTypeIdToTypeName = new Dictionary<uint, string>(); // server: temp typeId to TypeName
+        Dictionary<uint, string> dictTypeIdToTypeName = new Dictionary<uint, string>(); // server: temporary typeId to TypeName
         Dictionary<uint, Tuple<uint, uint>> dictObjToTypeIdAndSize = new Dictionary<uint, Tuple<uint, uint>>(); // server: temporary: obj to Tuple<TypeId, Size> used to transfer objs and their types
 
         Dictionary<string, List<Tuple<uint, uint>>> dictTypeToObjAndSizeList = new Dictionary<string, List<Tuple<uint, uint>>>(); // server: TypeName to List<objs>
@@ -635,7 +636,7 @@ namespace MapFileDict
                                     throw new InvalidOperationException("Null obj");
                                 }
                                 var size = ptr[i + 1];
-                                lstObjs.Add(Tuple.Create(obj,size));
+                                lstObjs.Add(Tuple.Create(obj, size));
                             }
                         }
                         await PipeFromClient.WriteAcknowledgeAsync(); // got this chunk
@@ -681,6 +682,87 @@ namespace MapFileDict
                     }
                     await PipeFromServer.WriteUInt32(0); // terminator
                     return null;
+                });
+
+            AddVerb(Verbs.GetTypeSummary,
+                actClientSendVerb: async (arg) =>
+                {
+                    await PipeFromClient.WriteVerbAsync(Verbs.GetTypeSummary);
+                    var res = new List<Tuple<string, uint, uint>>(); // typename, count, sum(size)
+                    while (true)
+                    {
+                        var bufNdx = 0U;
+                        var bufsize = await PipeFromClient.ReadUInt32();
+                        if (bufsize == 0)
+                        {
+                            break;
+                        }
+                        unsafe
+                        {
+                            var ptr = (uint*)_MemoryMappedRegionAddress;
+                            while (bufNdx < bufsize)
+                            {
+                                var strTypeLen = ptr[bufNdx++];
+                                if (strTypeLen == 0)
+                                {
+                                    break;
+                                }
+                                var typeName = Marshal.PtrToStringAnsi(_MemoryMappedRegionAddress + (int)bufNdx * 4, (int)strTypeLen);
+                                bufNdx += (uint)((typeName.Length + 3) / 4);//round up to nearest 4 so we can continue to index by UINT
+                                var typeCount = ptr[bufNdx++];
+                                var typeSize = ptr[bufNdx++];
+                                res.Add(Tuple.Create(typeName, typeCount, typeSize));
+                            }
+                        }
+                        await PipeFromClient.WriteAcknowledgeAsync();
+                    }
+                    return res;
+                },
+                actServerDoVerb: async (arg) =>
+                {
+                    await PipeFromServer.WriteAcknowledgeAsync();
+                    await taskCreateDictionariesForSentObjects;
+                    var bufChunkSize = _sharedMapSize - 4;// leave extra room for null term
+                    var bufNdx = 0U;
+                    foreach (var typeTuple in dictTypeToObjAndSizeList.OrderByDescending(k => k.Value.Sum(t => t.Item2)))
+                    {
+                        var numBytesRequired = 4 + typeTuple.Key.Length + 4 + 4; // strlen, strTypeNameBytes, count, sum(size)
+                        if (4 * bufNdx + numBytesRequired >= bufChunkSize)
+                        {
+                            await SendBufferAsync();
+                            bufNdx = 0;
+                            if (numBytesRequired > bufChunkSize)
+                            {
+                                throw new InvalidOperationException($"Type name too big");
+                            }
+                        }
+                        unsafe
+                        {
+                            var ptr = (uint*)_MemoryMappedRegionAddress;
+                            ptr[bufNdx++] = (uint)typeTuple.Key.Length;
+                            var bytesTypeName = Encoding.ASCII.GetBytes(typeTuple.Key);
+                            Marshal.Copy(bytesTypeName, 0, _MemoryMappedRegionAddress + (int)bufNdx * 4, typeTuple.Key.Length);
+                            bufNdx += (uint)((typeTuple.Key.Length + 3) / 4);//round up to nearest 4 so we can continue to index by UINT
+                            ptr[bufNdx++] = (uint)typeTuple.Value.Count;
+                            ptr[bufNdx++] = (uint)typeTuple.Value.Sum(t => t.Item2);
+                        }
+                    }
+                    if (bufNdx > 0) // send partial chunk
+                    {
+                        await SendBufferAsync();
+                    }
+                    await PipeFromServer.WriteUInt32(0); // terminator for all chunks
+                    return null;
+                    async Task SendBufferAsync()
+                    {
+                        unsafe
+                        {
+                            var ptr = (uint*)_MemoryMappedRegionAddress;
+                            ptr[bufNdx++] = 0; //null term for this chunk
+                        }
+                        await PipeFromServer.WriteUInt32(bufNdx); // size of chunk
+                        await PipeFromServer.ReadAcknowledgeAsync();
+                    }
                 });
 
             AddVerb(Verbs.CreateInvertedObjRefDictionary,
