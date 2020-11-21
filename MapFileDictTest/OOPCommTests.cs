@@ -35,6 +35,37 @@ Children of "-> builder = Microsoft.VisualStudio.Text.Implementation.BinaryStrin
          */
 
         [TestMethod]
+//        [ExpectedException(typeof(TimeoutException))]
+        public async Task OOPTestConnectionTimeout()
+        {
+            //var pidClient = Process.GetCurrentProcess().Id;
+            //var procServer = Process.Start(consapp, $"{pidClient}");
+            //Trace.WriteLine($"Client: started server {procServer.Id}");
+            var options = new OutOfProcOptions()
+            {
+                CreateServerOutOfProc = true,
+                ConnectTimeout = 0
+            };
+            try
+            {
+                await DoServerStuff(options, async (oop) =>
+                {
+                    Trace.WriteLine($"Server Logs: " + await oop.ClientSendVerbAsync(Verbs.GetLog, null));
+                });
+
+            }
+            catch (TimeoutException ex)
+            {
+                Trace.WriteLine($"Timeout " + ex.ToString());
+            }
+
+            VerifyLogStrings(@"
+Timeout System.TimeoutException: The operation has timed out.
+Killing server process
+");
+        }
+
+        [TestMethod]
         public async Task OOPGetObjectGraph()
         {
             var dictOGraph = await ReadObjectRefGraphAsync(fnameObjectRefGraph);
@@ -855,7 +886,7 @@ enumtype ClrType214
 # of 'nonefound' types = 0
 TSUMMARY  ClrType199  6667  1026763
 ");
-            Assert.IsTrue(opts.CreateServerOutOfProc,"Must be out of proc when not debugging");
+            Assert.IsTrue(opts.CreateServerOutOfProc, "Must be out of proc when not debugging");
         }
 
         internal async Task SendObjectsAndTypesAsync(ClrUtil clrUtil, OutOfProc outOfProc)

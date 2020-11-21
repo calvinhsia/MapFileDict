@@ -80,18 +80,6 @@ namespace MapFileDict
             AddVerbs();
             tcsAddedVerbs.SetResult(0);
         }
-        public async Task ConnectToServerAsync(CancellationToken token)
-        {
-            await PipeFromClient.ConnectAsync(token);
-            var errcode = (uint)await this.ClientSendVerbAsync(Verbs.EstablishConnection, 0);
-            if (errcode != 0)
-            {
-                var lastError = (string)await this.ClientSendVerbAsync(Verbs.GetLastError, null);
-                throw new Exception($"Error establishing connection to server " + lastError);
-            }
-            // always create a shared mem section on connection
-            await ClientSendVerbAsync(Verbs.CreateSharedMemSection, Options.SizeOfSharedMemory);
-        }
 
 
         /// <summary>

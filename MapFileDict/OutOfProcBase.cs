@@ -21,7 +21,11 @@ namespace MapFileDict
         {
             PidClient = Process.GetCurrentProcess().Id;
         }
+        /// <summary>
+        /// Start an EXE out of proc. Defaults to true. If false, will use in-proc (for easier debugging)
+        /// </summary>
         public bool CreateServerOutOfProc = true; // or can be inproc for testing
+        public int ConnectTimeout = 5000; // connection timeout in mSecs (-1 == infinite)
         public string ExistingExeNameToUseForServer = string.Empty;
         public string exeNameToCreate = string.Empty; // defaults to "tempasm.exe" in curdir
         public bool UseExistingExeIfExists = false; // false for unit tests, so will be deleted. True for production, so created EXE persists. Beware updates with diff versions
@@ -117,6 +121,21 @@ namespace MapFileDict
                 }
                 Trace.WriteLine($"Server Process IntPtr.Size = {IntPtr.Size} Trace Listener created");
                 DoServerLoopTask = DoServerLoopAsync();
+            }
+        }
+
+        public async Task ConnectToServerAsync(CancellationToken token)
+        {
+            PipeFromClient.Connect(timeout: Options.ConnectTimeout);
+            var errcode = (uint)await this.ClientSendVerbAsync(Verbs.EstablishConnection, 0);
+            if (errcode != 0)
+            {
+                var lastError = (string)await this.ClientSendVerbAsync(Verbs.GetLastError, null);
+                throw new Exception($"Error establishing connection to server " + lastError);
+            }
+            if (Options.SizeOfSharedMemory > 0)
+            {
+                await ClientSendVerbAsync(Verbs.CreateSharedMemSection, Options.SizeOfSharedMemory);
             }
         }
 
@@ -240,7 +259,7 @@ namespace MapFileDict
                                     receivedQuit = true;
                                 }
                                 var verb = (Verbs)PipeFromServer.ReadByte(); // when reading verb, we don't want timeout because client initiated calls can occur any time
-                                if (verb == Verbs.PipeBroken) 
+                                if (verb == Verbs.PipeBroken)
                                 {
                                     receivedQuit = true;
                                     break;
