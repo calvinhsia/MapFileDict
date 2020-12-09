@@ -813,7 +813,10 @@ namespace MapFileDict
         /// This runs on the client to send the data in chunks to the server. The object graph is multi million objects
         /// so we don't want to create them all in a data structure to send, but enumerate them and send in chunks
         /// </summary>
-        public async Task<Tuple<int, int>> SendObjRefGraphEnumerableInChunksAsync(IEnumerable<Tuple<uint, List<uint>>> ienumOGraph) // don't want to have dependency on ValueTuple
+        public async Task<Tuple<int, int>> SendObjRefGraphEnumerableInChunksAsync(
+            IEnumerable<Tuple<uint, List<uint>>> ienumOGraph,
+            Action<int> actPerChunk = null
+            ) // don't want to have dependency on ValueTuple
         {
             // can't have unsafe in lambda or anon func
             var bufChunkSize = _sharedMapSize - 4;// leave extra room for null term
@@ -868,6 +871,7 @@ namespace MapFileDict
                 }
                 await ClientSendVerbAsync(Verbs.SendObjAndReferencesInChunks, ndxbufChunk);
                 numChunksSent++;
+                actPerChunk?.Invoke(numChunksSent);
             }
         }
 

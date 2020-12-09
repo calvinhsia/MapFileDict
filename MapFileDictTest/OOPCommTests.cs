@@ -35,7 +35,7 @@ Children of "-> builder = Microsoft.VisualStudio.Text.Implementation.BinaryStrin
          */
 
         [TestMethod]
-//        [ExpectedException(typeof(TimeoutException))]
+        //        [ExpectedException(typeof(TimeoutException))]
         public async Task OOPTestConnectionTimeout()
         {
             //var pidClient = Process.GetCurrentProcess().Id;
@@ -287,7 +287,15 @@ Children of "<- System.IO.MemoryMappedFiles.MemoryMappedViewAccessor  120cd2dc"
                  {
                      var sw = Stopwatch.StartNew();
                      var ienumOGraph = GetObjectGraphIEnumerable();
-                     var tup = await oop.SendObjRefGraphEnumerableInChunksAsync(ienumOGraph);
+                     var modulo = 10;
+                     var tup = await oop.SendObjRefGraphEnumerableInChunksAsync(ienumOGraph,
+                         (nchunk) =>
+                         {
+                             if (nchunk % modulo == 0)
+                             {
+                                 Trace.WriteLine($" objref chunk {nchunk / modulo}");
+                             }
+                         });
                      int numObjs = tup.Item1;
                      var numChunksSent = tup.Item2;
                      // the timing includes parsing the text file for obj graph
