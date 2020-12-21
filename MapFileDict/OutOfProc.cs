@@ -128,7 +128,7 @@ namespace MapFileDict
                      await PipeFromServer.WriteAcknowledgeAsync();
                      await PipeFromServer.WriteStringAsAsciiAsync(LastError);
                      LastError = string.Empty;
-                     return null; // tell the server loop to quit
+                     return null;
                  });
 
             AddVerb(Verbs.ServerQuit,
