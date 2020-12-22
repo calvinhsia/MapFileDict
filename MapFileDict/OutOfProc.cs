@@ -24,6 +24,8 @@ namespace MapFileDict
         /// Sets <see cref="_MemoryMappedRegionAddress"/>
         /// </summary>
         CreateSharedMemSection, // create a region of memory that can be shared between the client/server
+        ExceptionOccurredOnServer,
+        SetExceptionValueForTest, //test only: create an exception when this value is reached
         CloseSharedMemSection,
         GetLog, // get server log entries: will clear all entries so far
         GetString, // very slow
@@ -128,6 +130,22 @@ namespace MapFileDict
                      await PipeFromServer.WriteAcknowledgeAsync();
                      await PipeFromServer.WriteStringAsAsciiAsync(LastError);
                      LastError = string.Empty;
+                     return null;
+                 });
+
+            AddVerb(Verbs.SetExceptionValueForTest,
+                 actClientSendVerb: async (arg) =>
+                 {
+                     await PipeFromClient.WriteVerbAsync(Verbs.SetExceptionValueForTest);
+                     await PipeFromClient.WriteUInt32((uint)arg); // send value
+                     await PipeFromClient.ReadAcknowledgeAsync();
+                     return null;
+                 },
+                 actServerDoVerb: async (arg) =>
+                 {
+                     await PipeFromServer.WriteAcknowledgeAsync();
+                     Options.TypeIdAtWhichToThrowException = await PipeFromServer.ReadUInt32();
+                     await PipeFromServer.WriteAcknowledgeAsync();
                      return null;
                  });
 
@@ -403,6 +421,10 @@ namespace MapFileDict
                             var typeId = ptr[bufNdx++];
                             var objSize = ptr[bufNdx++];
                             dictObjToTypeIdAndSize[obj] = Tuple.Create(typeId, objSize);
+                            if (Options.TypeIdAtWhichToThrowException !=0 && bufNdx >= Options.TypeIdAtWhichToThrowException)
+                            {
+                                throw new InvalidOperationException("Intentional exception for testing");
+                            }
                         }
                     }
                     await PipeFromServer.WriteAcknowledgeAsync();

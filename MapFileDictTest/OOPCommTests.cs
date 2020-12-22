@@ -897,6 +897,79 @@ TSUMMARY  ClrType199  6667  1026763
             Assert.IsTrue(opts.CreateServerOutOfProc, "Must be out of proc when not debugging");
         }
 
+        [TestMethod]
+        public async Task OOPTestSendObjsAndTypesWithException()
+        {
+            var cts = new CancellationTokenSource();
+            var opts = new OutOfProcOptions()
+            {
+                CreateServerOutOfProc = true,
+                SizeOfSharedMemory = 65536u * 1,
+                TypeIdAtWhichToThrowException = 1234
+            };
+            using (var oop = new OutOfProc(opts, cts.Token))
+            {
+                Task taskServerDone;
+                if (!oop.Options.CreateServerOutOfProc)
+                {
+                    taskServerDone = oop.DoServerLoopTask;
+                }
+                else
+                {
+                    taskServerDone = Task.Delay(100);
+                }
+
+                {
+                    try
+                    {
+                        await oop.ConnectToServerAsync(cts.Token);
+                        await oop.ClientSendVerbAsync(Verbs.SetExceptionValueForTest, opts.TypeIdAtWhichToThrowException);
+                        var numObjsToSend = 1000 * 1000 * 10;
+                        //                        numObjsToSend = 10;
+                        var clrUtil = new ClrUtil(numObjsToSend, oop);
+                        try
+                        {
+                            await SendObjectsAndTypesAsync(clrUtil, oop);
+                        }
+                        catch (Exception ex)
+                        {
+                            Trace.WriteLine($"Got server exception {ex.ToString()}");
+                        }
+
+                        Trace.WriteLine($"Server Logs: " + await oop.ClientSendVerbAsync(Verbs.GetLog, null));
+
+                        Trace.WriteLine("Client: sending quit");
+                        await oop.ClientSendVerbAsync(Verbs.ServerQuit, null);
+                    }
+                    catch (Exception ex)
+                    {
+                        Trace.WriteLine(ex.ToString());
+                        //   throw;
+                    }
+                }
+
+                var nDelaySecs = Debugger.IsAttached ? 3000 : 20;
+                var tskDelay = Task.Delay(TimeSpan.FromSeconds(nDelaySecs));
+                await Task.WhenAny(new[] { tskDelay, taskServerDone });
+                if (tskDelay.IsCompleted)
+                {
+                    Trace.WriteLine($"Delay {nDelaySecs} secs completed: cancelling server");
+                    cts.Cancel();
+                }
+                Trace.WriteLine($"Done");
+                if (!oop.Options.CreateServerOutOfProc)
+                {
+                    await oop.DoServerLoopTask;
+                    Assert.IsTrue(oop.DoServerLoopTask.IsCompleted);
+                }
+            }
+            VerifyLogStrings(@"
+System.InvalidOperationException: Intentional exception for testing
+");
+            Assert.IsTrue(opts.CreateServerOutOfProc, "Must be out of proc when not debugging");
+        }
+
+
         internal async Task SendObjectsAndTypesAsync(ClrUtil clrUtil, OutOfProc outOfProc)
         {
             uint typeIdNext = 0;

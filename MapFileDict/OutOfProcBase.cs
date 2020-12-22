@@ -34,6 +34,8 @@ namespace MapFileDict
         public string AdditionalAssemblyPaths = string.Empty;
         public bool ServerTraceLogging = true;
         public uint SizeOfSharedMemory = 65536u;
+        // for testing throwing exceptions only
+        public uint TypeIdAtWhichToThrowException = 0;
         /// <summary>
         /// Unit tests start/stop the OOP server very quickly: we don't want to use the same pipe name, because it's a race condition
         /// </summary>
@@ -385,7 +387,35 @@ namespace MapFileDict
         }
         public Task<object> ServerDoVerbAsync(Verbs verb, object parm)
         {
-            return _dictVerbs[verb].actionServerDoVerb(parm);
+            var resTask =  ExecuteFuncWithErrorHandling(() =>
+                {
+                    return _dictVerbs[verb].actionServerDoVerb(parm);
+                }
+            );
+            return resTask;
+        }
+
+        /// <summary>
+        /// The server is expected to consume all the bytes in the pipe sent from the client, even if there is an error
+        /// When the server is executing code, and an exception occurs, we need a way to return either success or a failure
+        /// But the error coule occur while the client is still sending data down the pipe, so we need to complete reading the data before sending the error
+        /// Otherwise, the extra data will be misinterpreted.
+        /// </summary>
+        /// <param name="actAsync"></param>
+        /// <returns></returns>
+        public async Task<object> ExecuteFuncWithErrorHandling(Func<Task<object>> actAsync)
+        {
+            object resTask = null;
+            try
+            {
+                resTask = await actAsync();
+            }
+            catch (Exception ex)
+            {
+                PipeFromServer.WriteByte((byte)Verbs.ExceptionOccurredOnServer);
+                await PipeFromServer.WriteStringAsAsciiAsync(ex.ToString());
+            }
+            return resTask;
         }
 
         public void Dispose()
@@ -540,6 +570,12 @@ namespace MapFileDict
         [FieldOffset(0)]
         public fixed uint UInts[65536 / 4];
     }
+    public class OutOfProcException : Exception
+    {
+        public OutOfProcException(string message) : base(message)
+        {
+        }
+    }
 
     public static class ExtensionMethods
     {
@@ -596,6 +632,12 @@ namespace MapFileDict
         {
             PipeMsgTraceWriteline($"{pipe.GetType().Name} ReadAck");
             var buff = await pipe.ReadTimeout(count: 1);
+            if (buff[0] == (byte)Verbs.ExceptionOccurredOnServer)
+            {
+                var exceptToString = await pipe.ReadStringAsAsciiAsync();
+                // delimit the exception on the server side from the exception on the client side
+                throw new OutOfProcException($"Server exception =\r\n $$<$\r\n" + exceptToString + "\r\n$$>$");
+            }
             if (buff[0] != (byte)Verbs.Acknowledge)
             {
                 Trace.Write($"Didn't get Expected Ack");
