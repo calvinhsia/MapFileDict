@@ -57,7 +57,11 @@ namespace MapFileDict
 
         // these dictionaries live in the server. Some are temp
         Dictionary<uint, string> dictTypeIdToTypeName = new Dictionary<uint, string>(); // server: temporary typeId to TypeName
-        Dictionary<uint, Tuple<uint, uint>> dictObjToTypeIdAndSize = new Dictionary<uint, Tuple<uint, uint>>(); // server: temporary: obj to Tuple<TypeId, Size> used to transfer objs and their types
+        // a dictionary can only have 65536 entries: resizing beyond 47,995,853 causes approx doubling to 95,991,737, which throws OOM (Array dimensions exceeded supported range
+        //   the GC Heap tries to keep consecutive chunks smaller than a segment size
+        //  This means we can't out all the objects in a single dictionary, so we'll use a list of dictionaries
+        const int MaxDictSize = 32000;
+        List<Dictionary<uint, Tuple<uint, uint>>> lstDictObjToTypeIdAndSize = new List<Dictionary<uint, Tuple<uint, uint>>>();// server: temporary: obj to Tuple<TypeId, Size> used to transfer objs and their types
 
         Dictionary<string, List<Tuple<uint, uint>>> dictTypeToObjAndSizeList = new Dictionary<string, List<Tuple<uint, uint>>>(); // server: TypeName to List<objs>
 
@@ -408,6 +412,16 @@ namespace MapFileDict
                 {
                     await PipeFromServer.WriteAcknowledgeAsync();
                     var bufNdx = 0;
+                    Dictionary<uint, Tuple<uint, uint>> dictObjToTypeIdAndSize = null;
+                    if (lstDictObjToTypeIdAndSize.Count == 0)
+                    {
+                        dictObjToTypeIdAndSize = new Dictionary<uint, Tuple<uint, uint>>();
+                        lstDictObjToTypeIdAndSize.Add(dictObjToTypeIdAndSize);
+                    }
+                    else
+                    {
+                        dictObjToTypeIdAndSize = lstDictObjToTypeIdAndSize[lstDictObjToTypeIdAndSize.Count - 1];
+                    }
                     unsafe
                     {
                         var ptr = (uint*)_MemoryMappedRegionAddress;
@@ -421,7 +435,12 @@ namespace MapFileDict
                             var typeId = ptr[bufNdx++];
                             var objSize = ptr[bufNdx++];
                             dictObjToTypeIdAndSize[obj] = Tuple.Create(typeId, objSize);
-                            if (Options.TypeIdAtWhichToThrowException !=0 && bufNdx >= Options.TypeIdAtWhichToThrowException)
+                            if (dictObjToTypeIdAndSize.Count > MaxDictSize)
+                            {
+                                dictObjToTypeIdAndSize = new Dictionary<uint, Tuple<uint, uint>>();
+                                lstDictObjToTypeIdAndSize.Add(dictObjToTypeIdAndSize);
+                            }
+                            if (Options.TypeIdAtWhichToThrowException != 0 && bufNdx >= Options.TypeIdAtWhichToThrowException)
                             {
                                 throw new InvalidOperationException("Intentional exception for testing");
                             }
@@ -473,17 +492,21 @@ namespace MapFileDict
                 {
                     this.taskCreateDictionariesForSentObjects = Task.Run(() =>
                     {
-                        foreach (var objToTypeAndSizeItem in dictObjToTypeIdAndSize)
+                        Trace.WriteLine($" lstDictObjToTypeIdAndSize.Count = {lstDictObjToTypeIdAndSize.Count}");
+                        foreach (var dictObjToTypeIdAndSize in lstDictObjToTypeIdAndSize)
                         {
-                            var typeName = dictTypeIdToTypeName[objToTypeAndSizeItem.Value.Item1];
-                            if (!dictTypeToObjAndSizeList.TryGetValue(typeName, out var lstObjs))
+                            foreach (var objToTypeAndSizeItem in dictObjToTypeIdAndSize)
                             {
-                                lstObjs = new List<Tuple<uint, uint>>(); // list(obj, size)
-                                dictTypeToObjAndSizeList[typeName] = lstObjs;
+                                var typeName = dictTypeIdToTypeName[objToTypeAndSizeItem.Value.Item1];
+                                if (!dictTypeToObjAndSizeList.TryGetValue(typeName, out var lstObjs))
+                                {
+                                    lstObjs = new List<Tuple<uint, uint>>(); // list(obj, size)
+                                    dictTypeToObjAndSizeList[typeName] = lstObjs;
+                                }
+                                lstObjs.Add(Tuple.Create(objToTypeAndSizeItem.Key, objToTypeAndSizeItem.Value.Item2)); // obj and size
                             }
-                            lstObjs.Add(Tuple.Create(objToTypeAndSizeItem.Key, objToTypeAndSizeItem.Value.Item2)); // obj and size
                         }
-                        dictObjToTypeIdAndSize = null;// don't neeed it any more: it's huge
+                        lstDictObjToTypeIdAndSize = null;// don't neeed it any more: it's huge
                         dictTypeIdToTypeName = null;
                         Trace.WriteLine($"Server has dictTypeToObjList {dictTypeToObjAndSizeList.Count}");
                     });

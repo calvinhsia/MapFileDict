@@ -65,6 +65,7 @@ Killing server process
 ");
         }
 
+        // test reading the object ref graph from disk
         [TestMethod]
         public async Task OOPGetObjectGraph()
         {
@@ -99,6 +100,10 @@ Parents of WpfTextView   362b72e0
             // 3618b1e4 Microsoft.VisualStudio.Editor.Implementation.VsCodeWindowAdapter
         }
 
+        /// <summary>
+        /// read the object ref graph from disk
+        /// </summary>
+        /// <returns></returns>
         IEnumerable<Tuple<uint, List<uint>>> GetObjectGraphIEnumerable()
         {
             using (var fs = new StreamReader(fnameObjectRefGraph))
@@ -109,6 +114,10 @@ Parents of WpfTextView   362b72e0
                 {
                     var line = fs.ReadLine();
                     var lineParts = line.Split(" ".ToCharArray(), StringSplitOptions.RemoveEmptyEntries);
+                    if (lineParts[0] == "Seg")
+                    {
+                        continue;
+                    }
                     var oidTemp = uint.Parse(lineParts[0].Trim(), System.Globalization.NumberStyles.AllowHexSpecifier);
                     if (!line.StartsWith(" "))
                     {
@@ -133,6 +142,10 @@ Parents of WpfTextView   362b72e0
             /*MSSln22611\MSSln22611.dmp
                         {
                             var sb = new StringBuilder();
+                            foreach (var seg in _heap.Segments)
+                            {
+                                sb.AppendLine($"Seg {seg.Start:x8} {seg.End:x8}");
+                            }
                             foreach (var entry in _heap.EnumerateObjectAddresses())
                             {
                                 var candidateObjEntry = entry;
@@ -230,6 +243,11 @@ Children of "<- System.IO.MemoryMappedFiles.MemoryMappedViewAccessor  120cd2dc"
                 {
                     var line = await fs.ReadLineAsync();
                     var lineParts = line.Split(" ".ToCharArray(), StringSplitOptions.RemoveEmptyEntries);
+                    if (lineParts[0] == "Seg")
+                    {
+                        continue;
+                    }
+
                     var oidTemp = uint.Parse(lineParts[0].Trim(), System.Globalization.NumberStyles.AllowHexSpecifier);
                     if (!line.StartsWith(" "))
                     {
@@ -1100,7 +1118,7 @@ System.InvalidOperationException: Intentional exception for testing
             public class ClrHeap
             {
                 private int numObjsToSend;
-
+                List<ClrSegment> lstSegments = new List<ClrSegment>();
                 public ClrHeap(int numObjsToSend)
                 {
                     this.numObjsToSend = numObjsToSend;
@@ -1113,6 +1131,13 @@ System.InvalidOperationException: Intentional exception for testing
                         }
                         var ty = new ClrType() { Name = tname };
                         _types.Add(ty);
+                    }
+                    // let's simulate segments
+                    var seglen = 100;
+                    var numsegs = numObjsToSend / seglen + 1;
+                    for (int i = 0; i < numsegs; i++)
+                    {
+                        lstSegments.Add(new ClrSegment() { Start = (ulong)(i * seglen), End = (ulong)(i * seglen + seglen - 1) });
                     }
                 }
 
@@ -1128,6 +1153,19 @@ System.InvalidOperationException: Intentional exception for testing
                         yield return i;
                     }
                 }
+                public class ClrSegment
+                {
+                    public ulong Start;
+                    public ulong End;
+                }
+                internal IList<ClrSegment> Segments
+                {
+                    get
+                    {
+                        return lstSegments;
+                    }
+                }
+
                 List<ClrType> _types = new List<ClrType>();
                 int numClrTypes = 3000;
                 internal ClrType GetObjectType(uint objAddr)
