@@ -33,7 +33,25 @@ Children of "-> builder = Microsoft.VisualStudio.Text.Implementation.BinaryStrin
        -> _storage = Microsoft.VisualStudio.Text.Implementation.ShortSimpleTextStorage 0x36197924
         -> _content = System.String 0x3618f914 Imports System.IO
          */
-
+        [TestMethod]
+        public void OOPTestDictSize()
+        {
+            try
+            {
+                for (var p = 9; p < 145; p++)
+                {
+                    var size = (int)Math.Pow(2, p);
+                    Trace.WriteLine($" p={p} size = {size:n0}");
+                    //                    var lst = new List<int>(size); // oom at 2^29 = 5.37e6
+                    //                    var dict = new Dictionary<int, int>(size); // p=27 size = 134,217,728
+                    //                    var arr = new int[size]; // p=29 size = 536,870,912
+                }
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine(ex.ToString());
+            }
+        }
         [TestMethod]
         //        [ExpectedException(typeof(TimeoutException))]
         public async Task OOPTestConnectionTimeout()
@@ -101,7 +119,7 @@ Parents of WpfTextView   362b72e0
         }
 
         /// <summary>
-        /// read the object ref graph from disk
+        /// read the object ref graph from disk (just obj and refs, no types)
         /// </summary>
         /// <returns></returns>
         IEnumerable<Tuple<uint, List<uint>>> GetObjectGraphIEnumerable()
@@ -411,7 +429,6 @@ Inverted Dictionary
                  36197924
  120cd2dc MemoryMappedViewAccessor has 2 parents
    120cd2dc
-# dictObjRef = 1223023
 ");
         }
         private async Task<List<uint>> DoQueryForParents(OutOfProc oop, uint objIdLeaf, string desc)
@@ -748,36 +765,6 @@ Server: Getlog #entries
         }
 
         [TestMethod]
-        public void OOPTestDictOrder()
-        {
-            Dictionary<string, List<Tuple<uint, uint>>> dictTypeToObjAndSizeList = new Dictionary<string, List<Tuple<uint, uint>>>(); // server: TypeName to List<objs>
-            try
-            {
-                int nObjs = 100000;
-                for (int i = 0; i < nObjs; i++)
-                {
-                    var lst = new List<Tuple<uint, uint>>();
-                    for (uint k = 0; k < 10; k++)
-                    {
-                        lst.Add(Tuple.Create(k, 10 * k));
-                    }
-                    dictTypeToObjAndSizeList[$"type{i}"] = lst;
-                }
-                foreach (var typeTuple in dictTypeToObjAndSizeList.OrderByDescending(k => k.Value.Sum(t => t.Item2)))
-                {
-
-                }
-                Trace.WriteLine($"done");
-
-            }
-            catch (Exception ex)
-            {
-                Trace.WriteLine($"exception " + ex.ToString());
-            }
-
-        }
-
-        [TestMethod]
         public async Task OOPTestSendObjsAndTypes()
         {
             var cts = new CancellationTokenSource();
@@ -1104,11 +1091,22 @@ System.InvalidOperationException: Intentional exception for testing
         public class ClrUtil
         {
             public ClrHeap _heap;
+            internal readonly int numObjsToSend;
             internal OutOfProc _outOfProc;
+            private readonly string fnameObjGraph;
+
+            //use this ctor to gen fake clr data
             public ClrUtil(int numObjsToSend, OutOfProc outOfProc)
             {
-                _heap = new ClrHeap(numObjsToSend);
+                this.numObjsToSend = numObjsToSend;
+                _heap = new ClrHeap(this);
                 this._outOfProc = outOfProc;
+            }
+            // use this ctor to gen objs from a real heap
+            public ClrUtil(string fnameObjGraph, OutOfProc outOfProc)
+            {
+                this._outOfProc = outOfProc;
+                this.fnameObjGraph = fnameObjGraph;
             }
 
             public void LogString(string s)
@@ -1119,25 +1117,32 @@ System.InvalidOperationException: Intentional exception for testing
             {
                 private int numObjsToSend;
                 List<ClrSegment> lstSegments = new List<ClrSegment>();
-                public ClrHeap(int numObjsToSend)
+                public ClrHeap(ClrUtil clrUtil)
                 {
-                    this.numObjsToSend = numObjsToSend;
-                    for (int i = 0; i < numClrTypes; i++)
+                    this.numObjsToSend = clrUtil.numObjsToSend;
+                    if (numObjsToSend > 0)
                     {
-                        var tname = $"ClrType{i % 1710}";
-                        if (i % 1500 == 0)
+                        for (int i = 0; i < numClrTypes; i++)
                         {
-                            tname = @"Microsoft.VisualStudio.Text.BufferUndoManager.Implementation.TextBufferUndoManager";
+                            var tname = $"ClrType{i % 1710}";
+                            if (i % 1500 == 0)
+                            {
+                                tname = @"Microsoft.VisualStudio.Text.BufferUndoManager.Implementation.TextBufferUndoManager";
+                            }
+                            var ty = new ClrType() { Name = tname };
+                            _types.Add(ty);
                         }
-                        var ty = new ClrType() { Name = tname };
-                        _types.Add(ty);
+                        // let's simulate segments
+                        var seglen = 100;
+                        var numsegs = numObjsToSend / seglen + 1;
+                        for (int i = 0; i < numsegs; i++)
+                        {
+                            lstSegments.Add(new ClrSegment() { Start = (ulong)(i * seglen), End = (ulong)(i * seglen + seglen - 1) });
+                        }
                     }
-                    // let's simulate segments
-                    var seglen = 100;
-                    var numsegs = numObjsToSend / seglen + 1;
-                    for (int i = 0; i < numsegs; i++)
-                    {
-                        lstSegments.Add(new ClrSegment() { Start = (ulong)(i * seglen), End = (ulong)(i * seglen + seglen - 1) });
+                    else
+                    {// get real clr data
+
                     }
                 }
 

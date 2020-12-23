@@ -65,6 +65,9 @@ namespace MapFileDict
 
         Dictionary<string, List<Tuple<uint, uint>>> dictTypeToObjAndSizeList = new Dictionary<string, List<Tuple<uint, uint>>>(); // server: TypeName to List<objs>
 
+
+        SortedList<uint, Dictionary<uint, List<uint>>> slistObjToRefs = new SortedList<uint, Dictionary<uint, List<uint>>>();
+        SortedList<uint, Dictionary<uint, List<uint>>> slistObjToParents = null;
         Dictionary<uint, List<uint>> dictObjToRefs = new Dictionary<uint, List<uint>>(); // server: obj=> list<objs referenced by obj>
         Dictionary<uint, List<uint>> dictObjToParents = null; // server: created from inverting dictObjToRefs. obj=>List<objs that reference obj>
 
@@ -161,10 +164,6 @@ namespace MapFileDict
                  },
                  actServerDoVerb: async (arg) =>
                  {
-                     if (ClientAndServerInSameProcess) // if same process, GetLog from server not called
-                     {
-                         Trace.WriteLine($"# dictObjRef = {dictObjToRefs.Count}");
-                     }
                      try
                      {
                          await PipeFromServer.WriteAcknowledgeAsync(); // pipe could be broken
