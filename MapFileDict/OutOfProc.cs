@@ -65,13 +65,15 @@ namespace MapFileDict
 
         Dictionary<string, List<Tuple<uint, uint>>> dictTypeToObjAndSizeList = new Dictionary<string, List<Tuple<uint, uint>>>(); // server: TypeName to List<objs>
 
-
+        //Dictionary with > 134k items throws OOM
+        //Partitioning by segment may not be enough: one dump has 137 segments for 60 million objs: about 444k objs per segment
+        //we'll partition the objs by addr: the number of most significant bits: e.g. 8 means the 8 MSBs, which means (32 - 8) = 24 bits, mask = 0xff000000, and2^8 - 256 partitions (buckets)
+        // mask = (uint)(~pow) + 1
+        uint partitionMask = 0xFF000000;
         SortedList<uint, Dictionary<uint, List<uint>>> slistObjToRefs = new SortedList<uint, Dictionary<uint, List<uint>>>();
         SortedList<uint, Dictionary<uint, List<uint>>> slistObjToParents = null;
-        Dictionary<uint, List<uint>> dictObjToRefs = new Dictionary<uint, List<uint>>(); // server: obj=> list<objs referenced by obj>
-        Dictionary<uint, List<uint>> dictObjToParents = null; // server: created from inverting dictObjToRefs. obj=>List<objs that reference obj>
-
-
+        //Dictionary<uint, List<uint>> dictObjToRefs = new Dictionary<uint, List<uint>>(); // server: obj=> list<objs referenced by obj>
+        //Dictionary<uint, List<uint>> dictObjToParents = null; // server: created from inverting dictObjToRefs. obj=>List<objs that reference obj>
 
         private Task taskCreateDictionariesForSentObjects;
         private Task taskCreateInvertedObjRefDictionary;
@@ -187,7 +189,7 @@ namespace MapFileDict
                     var strlog = string.Empty;
                     if (mylistener != null)
                     {
-                        Trace.WriteLine($"# dictObjRef = {dictObjToRefs.Count}");
+                        Trace.WriteLine($"# dictObjRef = {slistObjToRefs.Values.Sum(k => k.Values.Count)}");
                         Trace.WriteLine($"Server: Getlog #entries = {mylistener.lstLoggedStrings.Count}");
                         strlog = string.Join("\r\n   ", mylistener.lstLoggedStrings);
                         mylistener.lstLoggedStrings.Clear();
@@ -393,6 +395,7 @@ namespace MapFileDict
                     {
                         hashset.Add(await PipeFromServer.ReadUInt32());
                     }
+                    var dictObjToRefs = slistObjToRefs.GetPartitionForObject(obj, partitionMask);
                     dictObjToRefs[obj] = hashset.ToList();
                     Trace.WriteLine($"Server got {nameof(Verbs.SendObjAndReferences)}  {obj:x8} # child = {cnt:n0}");
                     await PipeFromServer.WriteAcknowledgeAsync();
@@ -635,6 +638,7 @@ namespace MapFileDict
                                     hashset.Add(ptr[bufNdx++]);
                                 }
                             }
+                            var dictObjToRefs = slistObjToRefs.GetPartitionForObject(obj, partitionMask);
                             dictObjToRefs[obj] = hashset.ToList();
                         }
                     }
@@ -807,7 +811,7 @@ namespace MapFileDict
                 {
                     this.taskCreateInvertedObjRefDictionary = Task.Run(async () =>
                     {
-                        dictObjToParents = await InvertDictionaryAsync(dictObjToRefs);
+                        slistObjToParents = await InvertDictionaryAsync(slistObjToRefs, partitionMask);
                     });
                     await PipeFromServer.WriteAcknowledgeAsync();
                     return null;
@@ -835,6 +839,7 @@ namespace MapFileDict
                     await PipeFromServer.WriteAcknowledgeAsync();
                     var objQuery = await PipeFromServer.ReadUInt32();
                     await this.taskCreateInvertedObjRefDictionary;
+                    var dictObjToParents = slistObjToParents.GetPartitionForObject(objQuery, partitionMask);
                     if (dictObjToParents.TryGetValue(objQuery, out var lstParents))
                     {
                         var numParents = lstParents?.Count;
@@ -919,38 +924,45 @@ namespace MapFileDict
             }
         }
 
-        public static Task<Dictionary<uint, List<uint>>> InvertDictionaryAsync(Dictionary<uint, List<uint>> dictOGraph)
+        public static Task<SortedList<uint, Dictionary<uint, List<uint>>>>
+            InvertDictionaryAsync(SortedList<uint, Dictionary<uint, List<uint>>> sListdictOGraph, uint partitionMask)
         {
-            var dictInvert = new Dictionary<uint, List<uint>>(capacity: dictOGraph.Count); // obj ->list of objs that reference it
-                                                                                           // the result will be a dict of every object, with a value of a List of all the objects referring to it.
-                                                                                           // thus looking for parents of a particular obj will be fast.
+            var sListInvert = new SortedList<uint, Dictionary<uint, List<uint>>>(); // obj ->list of objs that reference it
+                                                                                    // the result will be a dict of every object, with a value of a List of all the objects referring to it.
+                                                                                    // thus looking for parents of a particular obj will be fast.
 
-            List<uint> AddObjToDict(uint obj)
+            List<uint> GetListParentObjs(uint obj) // can return null if none found yet
             {
+                var dictInvert = sListInvert.GetPartitionForObject(obj, partitionMask);
                 if (!dictInvert.TryGetValue(obj, out var lstParents))
                 {
                     dictInvert[obj] = null; // initially, this obj has no parents: we haven't seen it before
                 }
                 return lstParents;
             }
-            foreach (var kvp in dictOGraph)
+            foreach (var dictOGraph in sListdictOGraph.Values) // for each partition of Dict obj=>list<
             {
-                var lsto = AddObjToDict(kvp.Key);
-                if (kvp.Value != null)
+                foreach (var kvp in dictOGraph) // for each obj->list<refs by that obj>
                 {
-                    foreach (var oChild in kvp.Value)
+                    GetListParentObjs(kvp.Key);
+                    if (kvp.Value != null) // if there are any child references 
                     {
-                        var lstChildsParents = AddObjToDict(oChild);
-                        if (lstChildsParents == null)
+                        foreach (var oChild in kvp.Value) // for each ref Obj=> ref child
                         {
-                            lstChildsParents = new List<uint>();
-                            dictInvert[oChild] = lstChildsParents;
+                            var lstChildsParents = GetListParentObjs(oChild); // get list of parents for the child obj being referenced (or null)
+                            if (lstChildsParents == null)
+                            {
+                                lstChildsParents = new List<uint>(); // add a new list
+                                var dictInvert = sListInvert.GetPartitionForObject(oChild, partitionMask);
+                                dictInvert[oChild] = lstChildsParents;
+                            }
+                            lstChildsParents.Add(kvp.Key);// set the parent of this child
                         }
-                        lstChildsParents.Add(kvp.Key);// set the parent of this child
                     }
                 }
             }
-            return Task.FromResult(dictInvert);
+            Trace.WriteLine($"InvertedDictionary # Partitions= {sListdictOGraph.Count}  {sListInvert.Count}");
+            return Task.FromResult(sListInvert);
         }
     }
 }

@@ -387,10 +387,10 @@ namespace MapFileDict
         }
         public Task<object> ServerDoVerbAsync(Verbs verb, object parm)
         {
-            var resTask =  ExecuteFuncWithErrorHandling(() =>
-                {
-                    return _dictVerbs[verb].actionServerDoVerb(parm);
-                }
+            var resTask = ExecuteFuncWithErrorHandling(() =>
+               {
+                   return _dictVerbs[verb].actionServerDoVerb(parm);
+               }
             );
             return resTask;
         }
@@ -716,6 +716,23 @@ namespace MapFileDict
                 str = Encoding.ASCII.GetString(bytes);
             }
             return str;
+        }
+
+        public static T GetPartitionForObject<T>(this SortedList<uint, T> list, uint obj, uint partitionMask)
+        {
+            var partition = partitionMask & obj;
+            var ndx = list.Keys.FindIndexOfFirstGTorEQTo(partition);
+            T result = default(T);
+            if (ndx == -1 || ndx >= list.Count)
+            {
+                result = (T)Activator.CreateInstance(typeof(T));
+                list.Add(partition, result);
+            }
+            else
+            {
+                result = list.Values[ndx];
+            }
+            return result;
         }
         /// <summary>
         /// Binary search for 1st item >= key

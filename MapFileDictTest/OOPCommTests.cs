@@ -38,7 +38,13 @@ Children of "-> builder = Microsoft.VisualStudio.Text.Implementation.BinaryStrin
         {
             try
             {
-                for (var p = 9; p < 145; p++)
+                for (var p = 0; p < 32; p++)
+                {
+                    var pow = (uint)Math.Pow(2, 32 - p);
+                    var mask = (uint)(~pow) + 1;
+                    Trace.WriteLine($" {p,3} {pow:x8}  {mask:x8}");
+                }
+                for (var p = 9; p < 45; p++)
                 {
                     var size = (int)Math.Pow(2, p);
                     Trace.WriteLine($" p={p} size = {size:n0}");
@@ -88,15 +94,18 @@ Killing server process
         public async Task OOPGetObjectGraph()
         {
             var dictOGraph = await ReadObjectRefGraphAsync(fnameObjectRefGraph);
+            var slistDictOGraph = new SortedList<uint,Dictionary<uint, List<uint>>>(); // only one partition in this test, so Mask doesn't matter
+            var partitionMask = 0xF0000000;
+            slistDictOGraph.Add(0, dictOGraph);
+            SortedList<uint, Dictionary<uint, List<uint>>> slistInvert = await OutOfProc.InvertDictionaryAsync(slistDictOGraph, partitionMask);
 
-            Dictionary<uint, List<uint>> dictInvert = await OutOfProc.InvertDictionaryAsync(dictOGraph);
-
-            Trace.WriteLine($"Inverted dict {dictInvert.Count:n0}"); // System.Object, String.Empty have the most parents: e.g. 0xaaaa
+            Trace.WriteLine($"Inverted dict {slistInvert.Values[0]:n0}"); // System.Object, String.Empty have the most parents: e.g. 0xaaaa
                                                                      //362b72e0  Microsoft.VisualStudio.Text.Editor.Implementation.WpfTextView   (
                                                                      //    3629712c  Microsoft.VisualStudio.Text.Implementation.TextBuffer
 
             void ShowParents(uint obj, string desc)
             {
+                var dictInvert = slistInvert.GetPartitionForObject(obj, partitionMask);
                 var lstTxtBuffer = dictInvert[obj];
                 Trace.WriteLine($"Parents of {desc}   {obj:x8}");
                 foreach (var itm in lstTxtBuffer)
