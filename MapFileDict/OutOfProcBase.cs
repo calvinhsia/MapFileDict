@@ -583,7 +583,7 @@ namespace MapFileDict
         {
             //            Trace.WriteLine(str);
         }
-        public static int TimeoutSecs = 30;
+        public static int TimeoutSecs = 120;
         public async static Task<byte[]> ReadTimeout(this PipeStream pipe, int count)
         {
             PipeMsgTraceWriteline($"  {pipe.GetType().Name} ReadTimeout count={count}");
@@ -723,7 +723,7 @@ namespace MapFileDict
             var partition = partitionMask & obj;
             var ndx = list.Keys.FindIndexOfFirstGTorEQTo(partition);
             T result = default(T);
-            if (ndx == -1 || ndx >= list.Count)
+            if (ndx == -1 || ndx >= list.Count || list.Keys[ndx] != partition)
             {
                 result = (T)Activator.CreateInstance(typeof(T));
                 list.Add(partition, result);

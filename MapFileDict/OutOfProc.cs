@@ -76,7 +76,6 @@ namespace MapFileDict
         //Dictionary<uint, List<uint>> dictObjToParents = null; // server: created from inverting dictObjToRefs. obj=>List<objs that reference obj>
 
         private Task taskCreateDictionariesForSentObjects;
-        private Task taskCreateInvertedObjRefDictionary;
         private Dictionary<string, List<Tuple<uint, uint>>>.KeyCollection.Enumerator _enumeratorDictTypes;
         private string _strRegExFilterTypes;
 
@@ -804,15 +803,14 @@ namespace MapFileDict
             AddVerb(Verbs.CreateInvertedObjRefDictionary,
                 actClientSendVerb: async (arg) =>
                 {
-                    await PipeFromClient.WriteVerbAsync(Verbs.CreateInvertedObjRefDictionary);
+                    PipeFromClient.WriteByte((byte)Verbs.CreateInvertedObjRefDictionary);
+                    await PipeFromClient.ReadAcknowledgeAsync();
                     return null;
                 },
                 actServerDoVerb: async (arg) =>
                 {
-                    this.taskCreateInvertedObjRefDictionary = Task.Run(async () =>
-                    {
-                        slistObjToParents = await InvertDictionaryAsync(slistObjToRefs, partitionMask);
-                    });
+                    // if this throws, it will be asynchronous and the client won't be expecting an ack
+                    slistObjToParents = InvertDictionary(slistObjToRefs, partitionMask);
                     await PipeFromServer.WriteAcknowledgeAsync();
                     return null;
                 });
@@ -836,9 +834,9 @@ namespace MapFileDict
                 },
                 actServerDoVerb: async (arg) =>
                 {
+                    //                    await this.taskCreateInvertedObjRefDictionary;
                     await PipeFromServer.WriteAcknowledgeAsync();
                     var objQuery = await PipeFromServer.ReadUInt32();
-                    await this.taskCreateInvertedObjRefDictionary;
                     var dictObjToParents = slistObjToParents.GetPartitionForObject(objQuery, partitionMask);
                     if (dictObjToParents.TryGetValue(objQuery, out var lstParents))
                     {
@@ -924,8 +922,8 @@ namespace MapFileDict
             }
         }
 
-        public static Task<SortedList<uint, Dictionary<uint, List<uint>>>>
-            InvertDictionaryAsync(SortedList<uint, Dictionary<uint, List<uint>>> sListdictOGraph, uint partitionMask)
+        public static SortedList<uint, Dictionary<uint, List<uint>>>
+            InvertDictionary(SortedList<uint, Dictionary<uint, List<uint>>> sListdictOGraph, uint partitionMask)
         {
             var sListInvert = new SortedList<uint, Dictionary<uint, List<uint>>>(); // obj ->list of objs that reference it
                                                                                     // the result will be a dict of every object, with a value of a List of all the objects referring to it.
@@ -957,12 +955,17 @@ namespace MapFileDict
                                 dictInvert[oChild] = lstChildsParents;
                             }
                             lstChildsParents.Add(kvp.Key);// set the parent of this child
+                            if (lstChildsParents.Count > 10)
+                            {
+//                                throw new InvalidOperationException("Testing error handling");
+
+                            }
                         }
                     }
                 }
             }
             Trace.WriteLine($"InvertedDictionary # Partitions= {sListdictOGraph.Count}  {sListInvert.Count}");
-            return Task.FromResult(sListInvert);
+            return sListInvert;
         }
     }
 }

@@ -42,7 +42,7 @@ Children of "-> builder = Microsoft.VisualStudio.Text.Implementation.BinaryStrin
                 {
                     var pow = (uint)Math.Pow(2, 32 - p);
                     var mask = (uint)(~pow) + 1;
-                    Trace.WriteLine($" {p,3} {pow:x8}  {mask:x8}");
+                    Trace.WriteLine($" {p,3} {pow:x8}  {mask:x8}   {pow:n0}");
                 }
                 for (var p = 9; p < 45; p++)
                 {
@@ -97,7 +97,7 @@ Killing server process
             var slistDictOGraph = new SortedList<uint,Dictionary<uint, List<uint>>>(); // only one partition in this test, so Mask doesn't matter
             var partitionMask = 0xF0000000;
             slistDictOGraph.Add(0, dictOGraph);
-            SortedList<uint, Dictionary<uint, List<uint>>> slistInvert = await OutOfProc.InvertDictionaryAsync(slistDictOGraph, partitionMask);
+            SortedList<uint, Dictionary<uint, List<uint>>> slistInvert = OutOfProc.InvertDictionary(slistDictOGraph, partitionMask);
 
             Trace.WriteLine($"Inverted dict {slistInvert.Values[0]:n0}"); // System.Object, String.Empty have the most parents: e.g. 0xaaaa
                                                                      //362b72e0  Microsoft.VisualStudio.Text.Editor.Implementation.WpfTextView   (
