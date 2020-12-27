@@ -60,8 +60,7 @@ namespace MapFileDict
         // a dictionary can only have 65536 entries: resizing beyond 47,995,853 causes approx doubling to 95,991,737, which throws OOM (Array dimensions exceeded supported range
         //   the GC Heap tries to keep consecutive chunks smaller than a segment size
         //  This means we can't out all the objects in a single dictionary, so we'll use a list of dictionaries
-        const int MaxDictSize = 32000;
-        List<Dictionary<uint, Tuple<uint, uint>>> lstDictObjToTypeIdAndSize = new List<Dictionary<uint, Tuple<uint, uint>>>();// server: temporary: obj to Tuple<TypeId, Size> used to transfer objs and their types
+        SortedList<uint, Dictionary<uint, Tuple<uint, uint>>> lstDictObjToTypeIdAndSize = new SortedList<uint, Dictionary<uint, Tuple<uint, uint>>>();// server: temporary: obj to Tuple<TypeId, Size> used to transfer objs and their types
 
         Dictionary<string, List<Tuple<uint, uint>>> dictTypeToObjAndSizeList = new Dictionary<string, List<Tuple<uint, uint>>>(); // server: TypeName to List<objs>
 
@@ -413,16 +412,6 @@ namespace MapFileDict
                 {
                     await PipeFromServer.WriteAcknowledgeAsync();
                     var bufNdx = 0;
-                    Dictionary<uint, Tuple<uint, uint>> dictObjToTypeIdAndSize = null;
-                    if (lstDictObjToTypeIdAndSize.Count == 0)
-                    {
-                        dictObjToTypeIdAndSize = new Dictionary<uint, Tuple<uint, uint>>();
-                        lstDictObjToTypeIdAndSize.Add(dictObjToTypeIdAndSize);
-                    }
-                    else
-                    {
-                        dictObjToTypeIdAndSize = lstDictObjToTypeIdAndSize[lstDictObjToTypeIdAndSize.Count - 1];
-                    }
                     unsafe
                     {
                         var ptr = (uint*)_MemoryMappedRegionAddress;
@@ -435,12 +424,8 @@ namespace MapFileDict
                             }
                             var typeId = ptr[bufNdx++];
                             var objSize = ptr[bufNdx++];
+                            var dictObjToTypeIdAndSize = lstDictObjToTypeIdAndSize.GetPartitionForObject(obj, partitionMask);
                             dictObjToTypeIdAndSize[obj] = Tuple.Create(typeId, objSize);
-                            if (dictObjToTypeIdAndSize.Count > MaxDictSize)
-                            {
-                                dictObjToTypeIdAndSize = new Dictionary<uint, Tuple<uint, uint>>();
-                                lstDictObjToTypeIdAndSize.Add(dictObjToTypeIdAndSize);
-                            }
                             if (Options.TypeIdAtWhichToThrowException != 0 && bufNdx >= Options.TypeIdAtWhichToThrowException)
                             {
                                 throw new InvalidOperationException("Intentional exception for testing");
@@ -496,7 +481,7 @@ namespace MapFileDict
                         Trace.WriteLine($" lstDictObjToTypeIdAndSize.Count = {lstDictObjToTypeIdAndSize.Count}");
                         foreach (var dictObjToTypeIdAndSize in lstDictObjToTypeIdAndSize)
                         {
-                            foreach (var objToTypeAndSizeItem in dictObjToTypeIdAndSize)
+                            foreach (var objToTypeAndSizeItem in dictObjToTypeIdAndSize.Value)
                             {
                                 var typeName = dictTypeIdToTypeName[objToTypeAndSizeItem.Value.Item1];
                                 if (!dictTypeToObjAndSizeList.TryGetValue(typeName, out var lstObjs))
