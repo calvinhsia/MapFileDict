@@ -21,24 +21,34 @@ namespace MapFileDict
         {
             PidClient = Process.GetCurrentProcess().Id;
         }
+        /// <summary>
+        /// Start an EXE out of proc. Defaults to true. If false, will use in-proc (for easier debugging)
+        /// </summary>
         public bool CreateServerOutOfProc = true; // or can be inproc for testing
+        public int ConnectTimeout = 5000; // connection timeout in mSecs (-1 == infinite)
         public string ExistingExeNameToUseForServer = string.Empty;
         public string exeNameToCreate = string.Empty; // defaults to "tempasm.exe" in curdir
         public bool UseExistingExeIfExists = false; // false for unit tests, so will be deleted. True for production, so created EXE persists. Beware updates with diff versions
         public PortableExecutableKinds portableExecutableKinds = PortableExecutableKinds.PE32Plus;
         public ImageFileMachine imageFileMachine = ImageFileMachine.AMD64;
         public string AdditionalAssemblyPaths = string.Empty;
-        public int TimeoutSecsPipeOp = 4;
         public bool ServerTraceLogging = true;
+        public uint SizeOfSharedMemory = 65536u;
+        // for testing throwing exceptions only
+        public uint TypeIdAtWhichToThrowException = 0;
+        /// <summary>
+        /// Unit tests start/stop the OOP server very quickly: we don't want to use the same pipe name, because it's a race condition
+        /// </summary>
+        public string NamedPipeAddString = string.Empty;
 
-        public int PidClient;
+        internal int PidClient;
+        internal string NamedPipeName; // only internal use: the client creates the pipename, the server uses it to connect
 
     }
     public abstract class OutOfProcBase : IDisposable
     {
         private CancellationToken token;
         public OutOfProcOptions Options;
-        private readonly string pipeName;
 
         public uint _sharedMapSize;
         protected string _sharedFileMapName;
@@ -46,7 +56,6 @@ namespace MapFileDict
         MemoryMappedViewAccessor _MemoryMappedFileViewForSharedRegion;
         public IntPtr _MemoryMappedRegionAddress;// the address of the shared region. Will probably be different for client and for server
         public int pidClient => Options.PidClient;
-        public int TimeoutSecsPipeOp => Options.TimeoutSecsPipeOp;
         protected MyTraceListener mylistener;
         public Process ProcServer { get; set; } // only if out of proc
         public Task DoServerLoopTask; // the loop that listens for the pipe and executes verbs
@@ -77,12 +86,15 @@ namespace MapFileDict
             }
             this.Options = options;
             this.token = token;
-            pipeName = $"MapFileDictPipe_{pidClient}";
+            if (string.IsNullOrEmpty(this.Options.NamedPipeName))
+            {
+                this.Options.NamedPipeName = $"MapFileDictPipe_{pidClient}" + options.NamedPipeAddString;
+            }
             if (Process.GetCurrentProcess().Id == options.PidClient) //we're the client process?
             {
                 PipeFromClient = new NamedPipeClientStream(
                     serverName: ".",
-                    pipeName: pipeName,
+                    pipeName: this.Options.NamedPipeName,
                     direction: PipeDirection.InOut,
                     options: PipeOptions.Asynchronous);
                 if (options.CreateServerOutOfProc)
@@ -104,10 +116,28 @@ namespace MapFileDict
             }
             else
             { //we're the server process
-                mylistener = new MyTraceListener();
-                Trace.Listeners.Add(mylistener);
+                if (options.ServerTraceLogging)
+                {
+                    mylistener = new MyTraceListener();
+                    Trace.Listeners.Add(mylistener);
+                }
                 Trace.WriteLine($"Server Process IntPtr.Size = {IntPtr.Size} Trace Listener created");
                 DoServerLoopTask = DoServerLoopAsync();
+            }
+        }
+
+        public async Task ConnectToServerAsync(CancellationToken token)
+        {
+            PipeFromClient.Connect(timeout: Options.ConnectTimeout);
+            var errcode = (uint)await this.ClientSendVerbAsync(Verbs.EstablishConnection, 0);
+            if (errcode != 0)
+            {
+                var lastError = (string)await this.ClientSendVerbAsync(Verbs.GetLastError, null);
+                throw new Exception($"Error establishing connection to server " + lastError);
+            }
+            if (Options.SizeOfSharedMemory > 0)
+            {
+                await ClientSendVerbAsync(Verbs.CreateSharedMemSection, Options.SizeOfSharedMemory);
             }
         }
 
@@ -155,7 +185,7 @@ namespace MapFileDict
 
             var args = $@"""{Assembly.GetAssembly(typeof(OutOfProcBase)).Location
                                }"" {nameof(OutOfProcBase)} {
-                                   nameof(OutOfProcBase.MyMainMethod)} {pidClient} {typeToInstantiateName}";
+                                   nameof(OutOfProcBase.MyMainMethod)} {pidClient} {typeToInstantiateName} {this.Options.NamedPipeName}";
             Trace.WriteLine($"args = {args}");
             ProcServer = Process.Start(
                 asm64BitFile,
@@ -165,7 +195,7 @@ namespace MapFileDict
         /// <summary>
         /// This is entry point in the 64 bit server process. Create an execution context for the asyncs
         /// </summary>
-        public static async Task MyMainMethod(int pidClient, string typeToInstantiateName)
+        public static async Task MyMainMethod(int pidClient, string typeToInstantiateName, string namedPipeName)
         {
             var tcsStaThread = new TaskCompletionSource<int>();
             var execContext = CreateExecutionContext(tcsStaThread);
@@ -177,7 +207,9 @@ namespace MapFileDict
                 try
                 {
                     var typeToInstantiate = typeof(OutOfProc).Assembly.GetTypes().Where(t => t.Name == typeToInstantiateName).FirstOrDefault();
-                    var args = new object[] { new OutOfProcOptions() { PidClient = pidClient }, new CancellationToken() };
+                    var args = new object[] {
+                        new OutOfProcOptions() { PidClient = pidClient, NamedPipeName= namedPipeName },
+                        new CancellationToken()};
                     oop = (OutOfProcBase)Activator.CreateInstance(typeToInstantiate, args);
                     Trace.WriteLine($"{nameof(oop.DoServerLoopAsync)} start");
                     await oop.DoServerLoopTask;
@@ -205,14 +237,14 @@ namespace MapFileDict
                 Trace.WriteLine("Server: Starting ");
                 await tcsAddedVerbs.Task;
                 PipeFromServer = new NamedPipeServerStream(
-                    pipeName: pipeName,
+                    pipeName: this.Options.NamedPipeName,
                     direction: PipeDirection.InOut,
                     maxNumberOfServerInstances: 1,
                     transmissionMode: PipeTransmissionMode.Message,
                     options: PipeOptions.Asynchronous
                     );
                 {
-                    Trace.WriteLine($"Server: wait for connection IntPtr.Size={IntPtr.Size}");
+                    Trace.WriteLine($"Server: wait for connection IntPtr.Size={IntPtr.Size} {Options.NamedPipeName}");
                     await PipeFromServer.WaitForConnectionAsync(token);
                     Trace.WriteLine($"Server: connected");
                     var receivedQuit = false;
@@ -229,9 +261,14 @@ namespace MapFileDict
                                     receivedQuit = true;
                                 }
                                 var verb = (Verbs)PipeFromServer.ReadByte(); // when reading verb, we don't want timeout because client initiated calls can occur any time
+                                if (verb == Verbs.PipeBroken)
+                                {
+                                    receivedQuit = true;
+                                    break;
+                                }
                                 if (_dictVerbs.ContainsKey(verb))
                                 {
-                                    var res = await ServerDoVerb(verb, null);
+                                    var res = await ServerDoVerbAsync(verb, null);
                                     if (res is Verbs)
                                     {
                                         if ((Verbs)res == Verbs.ServerQuit)
@@ -242,7 +279,6 @@ namespace MapFileDict
                                 }
                                 else
                                 {
-                                    Trace.WriteLine($"Received unknown Verb: this indicates a violation of pipe communications. Comm is broken, so terminating");
                                     throw new Exception($"Received unknown Verb {verb}");
                                 }
                             }
@@ -250,6 +286,13 @@ namespace MapFileDict
                             {
                                 Trace.WriteLine($"Exception: terminating process: " + ex.ToString());
                                 mylistener?.ForceAddToLog(ex.ToString());
+#if DEBUG
+                                if (!ClientAndServerInSameProcess)
+                                {
+                                    MessageBox(0, $"Server exception " + ex.ToString(),
+                                        $"{Process.GetCurrentProcess().ProcessName} {Process.GetCurrentProcess().Id} {Options.NamedPipeName}", 0);
+                                }
+#endif
                                 if (pidClient != Process.GetCurrentProcess().Id)
                                 {
                                     Environment.Exit(0);
@@ -281,17 +324,21 @@ namespace MapFileDict
 
             Trace.WriteLine("Server: exiting servertask");
         }
+
+        public bool ClientAndServerInSameProcess => !Options.CreateServerOutOfProc;
         /// <summary>
         /// Called from both client and server. Given a name, creates memory region of specified size (mult 64k) that can be addressed by each process
         /// </summary>
         internal void CreateSharedSection(string memRegionName, uint regionSize)
         {
-            if (Process.GetCurrentProcess().Id == pidClient && _MemoryMappedRegionAddress != IntPtr.Zero)
+            if (ClientAndServerInSameProcess && _MemoryMappedRegionAddress != IntPtr.Zero)
             {
                 return;// client and server in same proc, so same region is shared
             }
             _sharedFileMapName = memRegionName;
 
+            //var extraMemNeeeded = regionSize % MemMap.AllocationGranularity;
+            //var actualSize = regionSize + extraMemNeeeded; 
             _sharedMapSize = regionSize;
             _MemoryMappedFileForSharedRegion = MemoryMappedFile.CreateOrOpen(
                mapName: _sharedFileMapName,
@@ -305,7 +352,24 @@ namespace MapFileDict
                size: 0,
                access: MemoryMappedFileAccess.ReadWrite);
             _MemoryMappedRegionAddress = _MemoryMappedFileViewForSharedRegion.SafeMemoryMappedViewHandle.DangerousGetHandle();
-            Trace.WriteLine($"IntPtr.Size = {IntPtr.Size} Shared Memory region address 0x{_MemoryMappedRegionAddress.ToInt64():x16}");
+            Trace.WriteLine($"{Process.GetCurrentProcess().ProcessName} IntPtr.Size = {IntPtr.Size} Creating Shared Memory region size = {_sharedMapSize} address {_MemoryMappedRegionAddress.ToInt64():x16}");
+        }
+        /// <summary>
+        /// Called from both client and server, clears the shared memory region
+        /// </summary>
+        internal void CloseSharedSection()
+        {
+            if (_MemoryMappedRegionAddress != IntPtr.Zero)
+            {
+                Trace.WriteLine($"{Process.GetCurrentProcess().ProcessName} IntPtr.Size = {IntPtr.Size} Closing Shared Memory region size = {_sharedMapSize} address {_MemoryMappedRegionAddress.ToInt64():x16}");
+                _MemoryMappedFileViewForSharedRegion?.Dispose();
+                _MemoryMappedFileViewForSharedRegion = null;
+                _MemoryMappedFileForSharedRegion?.Dispose();
+                _MemoryMappedFileForSharedRegion = null;
+                _MemoryMappedRegionAddress = IntPtr.Zero;
+                _sharedMapSize = 0;
+                _sharedFileMapName = null;
+            }
         }
         public void AddVerb(Verbs verb,
             Func<object, Task<object>> actClientSendVerb,
@@ -317,13 +381,41 @@ namespace MapFileDict
                 actionServerDoVerb = actServerDoVerb
             });
         }
-        public Task<object> ClientSendVerb(Verbs verb, object parm)
+        public Task<object> ClientSendVerbAsync(Verbs verb, object parm)
         {
             return _dictVerbs[verb].actionClientSendVerb(parm);
         }
-        public Task<object> ServerDoVerb(Verbs verb, object parm)
+        public Task<object> ServerDoVerbAsync(Verbs verb, object parm)
         {
-            return _dictVerbs[verb].actionServerDoVerb(parm);
+            var resTask = ExecuteFuncWithErrorHandling(() =>
+               {
+                   return _dictVerbs[verb].actionServerDoVerb(parm);
+               }
+            );
+            return resTask;
+        }
+
+        /// <summary>
+        /// The server is expected to consume all the bytes in the pipe sent from the client, even if there is an error
+        /// When the server is executing code, and an exception occurs, we need a way to return either success or a failure
+        /// But the error coule occur while the client is still sending data down the pipe, so we need to complete reading the data before sending the error
+        /// Otherwise, the extra data will be misinterpreted.
+        /// </summary>
+        /// <param name="actAsync"></param>
+        /// <returns></returns>
+        public async Task<object> ExecuteFuncWithErrorHandling(Func<Task<object>> actAsync)
+        {
+            object resTask = null;
+            try
+            {
+                resTask = await actAsync();
+            }
+            catch (Exception ex)
+            {
+                PipeFromServer.WriteByte((byte)Verbs.ExceptionOccurredOnServer);
+                await PipeFromServer.WriteStringAsAsciiAsync(ex.ToString());
+            }
+            return resTask;
         }
 
         public void Dispose()
@@ -335,7 +427,7 @@ namespace MapFileDict
                 {
                     Trace.WriteLine($"Waiting for server to exit Pid={ProcServer.Id}");
                     Thread.Sleep(TimeSpan.FromSeconds(1));
-                    if (!Debugger.IsAttached && nRetries > 5)
+                    if (!Debugger.IsAttached && nRetries++ > 5)
                     {
                         Trace.WriteLine($"Killing server process");
                         ProcServer.Kill();
@@ -353,8 +445,7 @@ namespace MapFileDict
             }
             PipeFromClient?.Dispose();
             PipeFromServer?.Dispose();
-            _MemoryMappedFileViewForSharedRegion?.Dispose();
-            _MemoryMappedFileForSharedRegion?.Dispose();
+            CloseSharedSection();
             mylistener?.Dispose();
         }
         [DllImport("user32")]
@@ -407,18 +498,24 @@ namespace MapFileDict
     public class MyTraceListener : TextWriterTraceListener
     {
         public List<string> lstLoggedStrings = new List<string>();
+        bool IsInTraceListener = false;
         public MyTraceListener()
         {
         }
         public override void WriteLine(string str)
         {
-            var dt = string.Format("[{0}],",
-                 DateTime.Now.ToString("hh:mm:ss:fff")
-                 ) + $"{Thread.CurrentThread.ManagedThreadId,2} ";
-            lstLoggedStrings.Add(dt + str);
-            if (Debugger.IsAttached)
+            if (!IsInTraceListener)
             {
-                Debug.WriteLine(dt + str);
+                IsInTraceListener = true;
+                var dt = string.Format("[{0}],",
+                     DateTime.Now.ToString("hh:mm:ss:fff")
+                     ) + $"{Thread.CurrentThread.ManagedThreadId,2} ";
+                lstLoggedStrings.Add(dt + str);
+                if (Debugger.IsAttached)
+                {
+                    Debug.WriteLine(dt + str);
+                }
+                IsInTraceListener = false;
             }
         }
 
@@ -465,6 +562,20 @@ namespace MapFileDict
             }
         }
     }
+    [StructLayout(LayoutKind.Explicit, Size = 65536)]
+    public unsafe struct MemBufChunk
+    {
+        [FieldOffset(0)]
+        public fixed byte Bytes[65536];
+        [FieldOffset(0)]
+        public fixed uint UInts[65536 / 4];
+    }
+    public class OutOfProcException : Exception
+    {
+        public OutOfProcException(string message) : base(message)
+        {
+        }
+    }
 
     public static class ExtensionMethods
     {
@@ -472,12 +583,18 @@ namespace MapFileDict
         {
             //            Trace.WriteLine(str);
         }
-        public static int TimeoutSecs = 30;
+        public static int TimeoutSecs = 120;
         public async static Task<byte[]> ReadTimeout(this PipeStream pipe, int count)
         {
             PipeMsgTraceWriteline($"  {pipe.GetType().Name} ReadTimeout count={count}");
             var buff = new byte[count];
             var taskRead = Task<int>.Factory.FromAsync(pipe.BeginRead, pipe.EndRead, buff, 0, 1, null, TaskCreationOptions.None);
+#if DEBUG
+            if (Debugger.IsAttached)
+            {
+                TimeoutSecs = 30 * 10000;
+            }
+#endif
             var taskTimeout = Task.Delay(TimeSpan.FromSeconds(TimeoutSecs));
 
             await Task.WhenAny(new Task[] { taskTimeout, taskRead });
@@ -515,6 +632,12 @@ namespace MapFileDict
         {
             PipeMsgTraceWriteline($"{pipe.GetType().Name} ReadAck");
             var buff = await pipe.ReadTimeout(count: 1);
+            if (buff[0] == (byte)Verbs.ExceptionOccurredOnServer)
+            {
+                var exceptToString = await pipe.ReadStringAsAsciiAsync();
+                // delimit the exception on the server side from the exception on the client side
+                throw new OutOfProcException($"Server exception =\r\n $$<$\r\n" + exceptToString + "\r\n$$>$");
+            }
             if (buff[0] != (byte)Verbs.Acknowledge)
             {
                 Trace.Write($"Didn't get Expected Ack");
@@ -570,21 +693,88 @@ namespace MapFileDict
         }
         public static async Task WriteStringAsAsciiAsync(this PipeStream pipe, string str)
         {
-            PipeMsgTraceWriteline($"{nameof(WriteStringAsAsciiAsync)} Write len {str.Length}");
-            await pipe.WriteUInt32((uint)str.Length);
-            var byts = Encoding.ASCII.GetBytes(str);
-            PipeMsgTraceWriteline($"{nameof(WriteStringAsAsciiAsync)} Write bytes {byts.Length}");
-            await pipe.WriteAsync(byts, 0, byts.Length);
+            var strlen = string.IsNullOrEmpty(str) ? 0 : str.Length;
+            PipeMsgTraceWriteline($"{nameof(WriteStringAsAsciiAsync)} Write len {strlen}");
+            await pipe.WriteUInt32((uint)strlen);
+            if (strlen > 0)
+            {
+                var byts = Encoding.ASCII.GetBytes(str);
+                PipeMsgTraceWriteline($"{nameof(WriteStringAsAsciiAsync)} Write bytes {byts.Length}");
+                await pipe.WriteAsync(byts, 0, byts.Length);
+            }
         }
         public static async Task<string> ReadStringAsAsciiAsync(this PipeStream pipe)
         {
             PipeMsgTraceWriteline($"{nameof(ReadStringAsAsciiAsync)} Read len");
             var strlen = await pipe.ReadUInt32();
             PipeMsgTraceWriteline($"{nameof(ReadStringAsAsciiAsync)} Got len = {strlen}");
-            var bytes = new byte[strlen];
-            await pipe.ReadAsync(bytes, 0, (int)strlen);
-            var str = Encoding.ASCII.GetString(bytes);
+            var str = string.Empty;
+            if (strlen > 0)
+            {
+                var bytes = new byte[strlen];
+                await pipe.ReadAsync(bytes, 0, (int)strlen);
+                str = Encoding.ASCII.GetString(bytes);
+            }
             return str;
+        }
+
+        public static T GetPartitionForObject<T>(this SortedList<uint, T> list, uint obj, uint partitionMask)
+        {
+            var partition = partitionMask & obj;
+            var ndx = list.Keys.FindIndexOfFirstGTorEQTo(partition);
+            T result = default(T);
+            if (ndx == -1 || ndx >= list.Count || list.Keys[ndx] != partition)
+            {
+                result = (T)Activator.CreateInstance(typeof(T));
+                list.Add(partition, result);
+            }
+            else
+            {
+                result = list.Values[ndx];
+            }
+            return result;
+        }
+        /// <summary>
+        /// Binary search for 1st item >= key
+        /// Returns -1 for empty list
+        /// Returns list.count if key > all items
+        /// </summary>
+        /// <typeparam name="T"></typeparam>
+        /// <param name="sortedList"></param>
+        /// <param name="key"></param>
+        public static int FindIndexOfFirstGTorEQTo<T>(this IList<T> sortedList, T key) where T : IComparable<T>
+        {
+            int right = 0;
+            if (sortedList.Count == 0) //empty list
+            {
+                right = -1;
+            }
+            else
+            {
+                right = sortedList.Count - 1;
+                int left = 0;
+                while (right > left)
+                {
+                    var ndx = (left + right) / 2;
+                    var elem = sortedList[ndx];
+                    if (elem.CompareTo(key) >= 0)
+                    {
+                        right = ndx;
+                    }
+                    else
+                    {
+                        left = ndx + 1;
+                    }
+                }
+            }
+            if (right >= 0) // see if we're beyond the list?
+            {
+                if (sortedList[right].CompareTo(key) < 0)
+                {
+                    right = sortedList.Count;
+                }
+            }
+            return right;
         }
     }
 }
