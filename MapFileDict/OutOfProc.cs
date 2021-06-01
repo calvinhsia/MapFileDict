@@ -68,7 +68,7 @@ namespace MapFileDict
         //Partitioning by segment may not be enough: one dump has 137 segments for 60 million objs: about 444k objs per segment
         //we'll partition the objs by addr: the number of most significant bits: e.g. 8 means the 8 MSBs, which means (32 - 8) = 24 bits, mask = 0xff000000, and2^8 - 256 partitions (buckets)
         // mask = (uint)(~pow) + 1
-        uint partitionMask = 0xFF000000;
+        readonly uint partitionMask = 0xFF000000;
         SortedList<uint, Dictionary<uint, List<uint>>> slistObjToRefs = new SortedList<uint, Dictionary<uint, List<uint>>>();
         SortedList<uint, Dictionary<uint, List<uint>>> slistObjToParents = null;
         //Dictionary<uint, List<uint>> dictObjToRefs = new Dictionary<uint, List<uint>>(); // server: obj=> list<objs referenced by obj>
@@ -230,6 +230,10 @@ namespace MapFileDict
                     await PipeFromClient.WriteUInt32(sharedRegionSize);
                     var memRegionName = await PipeFromClient.ReadStringAsAsciiAsync();
                     CreateSharedSection(memRegionName, sharedRegionSize); // now map that region into the client
+                    if (_MemoryMappedRegionAddress == IntPtr.Zero)
+                    {
+                        throw new InvalidOperationException($"Shared memory region not created");
+                    }
                     return null;
                 },
                 actServerDoVerb: async (arg) =>
@@ -546,7 +550,7 @@ namespace MapFileDict
                     while (_enumeratorDictTypes.MoveNext())
                     {
                         var val = _enumeratorDictTypes.Current;
-                        if (string.IsNullOrEmpty(_strRegExFilterTypes) || Regex.IsMatch(val, _strRegExFilterTypes))
+                        if (string.IsNullOrEmpty(_strRegExFilterTypes) || Regex.IsMatch(val, _strRegExFilterTypes, RegexOptions.IgnoreCase))
                         {
                             await PipeFromServer.WriteStringAsAsciiAsync(val);
                             fGotOne = true;
