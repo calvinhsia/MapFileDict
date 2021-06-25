@@ -43,7 +43,8 @@ namespace MapFileDict
                                         // very useful for finding: e.g. who holds a reference to FOO
         QueryParentOfObject, // given an obj, get a list of objs that reference it
         Delayms,
-        ObjsAndTypesDoneSending,
+        ObjsAndTypesDoneSending, // tell server that sending is done and async task to process can start
+        GetTypeCount, // wait for async task to finish processing and return type count
         GetObjsOfType,
         GetFirstType,
         GetNextType,
@@ -501,6 +502,21 @@ namespace MapFileDict
                         Trace.WriteLine($"Server has dictTypeToObjList {dictTypeToObjAndSizeList.Count}");
                     });
                     await PipeFromServer.WriteAcknowledgeAsync();
+                    return null;
+                });
+
+            AddVerb(Verbs.GetTypeCount,
+                actClientSendVerb: async (arg) =>
+                {
+                    await PipeFromClient.WriteVerbAsync(Verbs.GetTypeCount);
+                    var typeCount = await PipeFromClient.ReadUInt32();
+                    return typeCount;
+                },
+                actServerDoVerb: async (arg) =>
+                {
+                    await this.taskCreateDictionariesForSentObjects;
+                    await PipeFromServer.WriteAcknowledgeAsync();
+                    await PipeFromServer.WriteUInt32((uint)dictTypeToObjAndSizeList.Count);
                     return null;
                 });
 

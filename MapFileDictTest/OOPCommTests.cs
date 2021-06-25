@@ -805,6 +805,8 @@ Server: Getlog #entries
                         await SendObjectsAndTypesAsync(clrUtil, oop);
                         Trace.WriteLine($"ObjsAndTypes Sent {numObjsToSend:n0}  Objs/Sec = {numObjsToSend / sw.Elapsed.TotalSeconds:n2}"); // 5k/sec
 
+                        var typeCountFromServer = (uint)await oop.ClientSendVerbAsync(Verbs.GetTypeCount, 0);
+                        Trace.WriteLine($"TypeCountFromServer = {typeCountFromServer}");
 
                         var TypeSummary = (List<Tuple<string, uint, uint>>)await oop.ClientSendVerbAsync(Verbs.GetTypeSummary, 0);
                         foreach (var tup in TypeSummary.Take(10))
