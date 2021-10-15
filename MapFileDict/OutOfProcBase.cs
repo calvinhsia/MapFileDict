@@ -595,9 +595,11 @@ namespace MapFileDict
                 TimeoutSecs = 30 * 10000;
             }
 #endif
-            var taskTimeout = Task.Delay(TimeSpan.FromSeconds(TimeoutSecs));
+            var cts = new CancellationTokenSource();
+            var taskTimeout = Task.Delay(TimeSpan.FromSeconds(TimeoutSecs), cts.Token);
 
             await Task.WhenAny(new Task[] { taskTimeout, taskRead });
+            cts.Cancel();
             if (!taskRead.IsCompleted)
             {
                 PipeMsgTraceWriteline($"   {pipe.GetType().Name} TaskRead not complete Count ={count}");
@@ -612,9 +614,11 @@ namespace MapFileDict
             PipeMsgTraceWriteline($"  {pipe.GetType().Name} writetimeout Count={count}");
             //            pipe.BeginWrite(buff, offset: 0, count: count,null,null)
             var taskWrite = Task.Factory.FromAsync(pipe.BeginWrite, pipe.EndWrite, buff, 0, count, null, TaskCreationOptions.None);
-            var taskTimeout = Task.Delay(TimeSpan.FromSeconds(TimeoutSecs));
+            var cts = new CancellationTokenSource();
+            var taskTimeout = Task.Delay(TimeSpan.FromSeconds(TimeoutSecs), cts.Token);
 
             await Task.WhenAny(new Task[] { taskTimeout, taskWrite });
+            cts.Cancel();
             if (!taskWrite.IsCompleted)
             {
                 PipeMsgTraceWriteline($"   {pipe.GetType().Name} TaskWrite not complete Count ={count}");
