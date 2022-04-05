@@ -25,6 +25,7 @@ namespace MapHugeData
     public partial class MainWindow : Window
     {
         public bool TouchMemory { get; set; } = false;
+        public bool OpenReadOnly { get; set; } = false;
         public string TxtPath { get; set; } = @"c:\users\calvinh\source\repos";
         public long MaxToMapGigs { get; set; } = 4;
         bool IsRunning = false;
@@ -32,6 +33,8 @@ namespace MapHugeData
         {
             InitializeComponent();
             this.DataContext = this;
+            var mems = typeof(System.IO.FileAccess).GetMembers(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+
         }
         List<MyMap> lstFiles = new List<MyMap>();
         async void BtnGoClick(object sender, RoutedEventArgs e)
@@ -51,12 +54,12 @@ namespace MapHugeData
                         var totSize = 0L;
                         var PagedMemorySize64start = proc.PagedMemorySize64;
                         var wsstart = proc.WorkingSet64;
-                        foreach (var file in Directory.EnumerateFiles(TxtPath, "*.*", new EnumerationOptions() { RecurseSubdirectories = true }))
+                        foreach (var file in Directory.EnumerateFiles(TxtPath, "*.cs", new EnumerationOptions() { RecurseSubdirectories = true }))
                         {
                             var finfo = new FileInfo(file);
                             if (finfo.Length > 0)
                             {
-                                var m = new MyMap(finfo, TouchMemory);
+                                var m = new MyMap(finfo, TouchMemory, OpenReadOnly);
                                 totSize += m.Length;
                                 lstFiles.Add(m);
                                 if (MaxToMapGigs != 0 && totSize > MaxToMapGigs * 1024 * 1024 * 1024)
@@ -159,12 +162,19 @@ namespace MapHugeData
             private readonly MemoryMappedFile? _mappedFile;
             private readonly MemoryMappedViewAccessor? _mapView;
             public long Length = 0;
-            public MyMap(FileInfo finfo, bool TouchMemory)
+            public MyMap(FileInfo finfo, bool TouchMemory, bool OpenReadOnly)
             {
                 _FileInfo = finfo;
                 try
                 {
-                    _mappedFile = MemoryMappedFile.CreateFromFile(finfo.FullName);
+                    if (OpenReadOnly)
+                    {
+                        _mappedFile = MemoryMappedFile.CreateFromFile(finfo.FullName, FileMode.Open, mapName: null, capacity: 0, access: MemoryMappedFileAccess.Read);
+                    }
+                    else
+                    {
+                        _mappedFile = MemoryMappedFile.CreateFromFile(finfo.FullName, FileMode.Open);
+                    }
                     _mapView = _mappedFile.CreateViewAccessor(offset: 0, size: _FileInfo.Length, MemoryMappedFileAccess.Read);
                     Length = _FileInfo.Length;
                     if (TouchMemory)

@@ -15,6 +15,7 @@
             <TextBox Text="{Binding TxtPath}" Width="400"/>
             <TextBox Text="{Binding MaxToMapGigs}" Width="80" ToolTip="# Gigs to Stop mapping when reached. 0 means map all"/>
             <CheckBox Content="TouchMemory" IsChecked="{Binding TouchMemory}"/>
+            <CheckBox Content="OpenReadOnly" IsChecked="{Binding OpenReadOnly}"/>
             <Button Content="_Go" Click="BtnGoClick" Name="btnGo"/>
         </StackPanel>
         <Grid Grid.Row="1">
