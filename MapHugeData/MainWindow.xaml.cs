@@ -175,7 +175,7 @@ namespace MapHugeData
                     {
                         _mappedFile = MemoryMappedFile.CreateFromFile(finfo.FullName, FileMode.Open);
                     }
-                    _mapView = _mappedFile.CreateViewAccessor(offset: 0, size: _FileInfo.Length, MemoryMappedFileAccess.Read);
+                    _mapView = _mappedFile.CreateViewAccessor(offset: 0, size: _FileInfo.Length,(OpenReadOnly ?  MemoryMappedFileAccess.Read: MemoryMappedFileAccess.ReadWrite));
                     Length = _FileInfo.Length;
                     if (TouchMemory)
                     {
