@@ -1405,15 +1405,15 @@ namespace MapFileDict
                         }
                         else
                         {
-                            var ctors = type.GetConstructors();
-                            if (ctors.Length > 0 && ctors[0].GetParameters().Length > 0)
-                            {
-                                data = Activator.CreateInstance(type, new object[] { "http://msn.com" });
-                            }
-                            else
-                            {
-                                data = Activator.CreateInstance(type);
-                            }
+                            //var ctors = type.GetConstructors();
+                            //if (ctors.Length > 0 && ctors[0].GetParameters().Length > 0)
+                            //{
+                            //    data = Activator.CreateInstance(type, new object[] { "http://msn.com" });
+                            //}
+                            //else
+                            //{
+                            //}
+                            data = Activator.CreateInstance(type);
 
                             if (classInfo._simpleType != null)
                             {
