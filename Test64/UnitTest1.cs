@@ -37,6 +37,7 @@ namespace Test64
             public override string ToString() => $" URI={HelpLink}";
         }
         [TestMethod]
+        [Ignore]
         public void TestCSWin32LoadTestData()
         {
             var mapfiledict = new MapFileDict<string, TestData>(mapfileType: MapMemTypes.MapMemTypePageFile);

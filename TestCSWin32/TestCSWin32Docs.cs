@@ -60,6 +60,7 @@ namespace TestCSWin32
 
         }
         [TestMethod]
+        [Ignore]
         public void TestCSWin32Load()
         {
             var docsPath = @"C:\Users\calvinh\source\repos\CsWin32\bin\Microsoft.Windows.CsWin32.Tests\Debug\netcoreapp3.1\apidocs.msgpack";
