@@ -115,9 +115,9 @@ namespace MapFileDict
             }
             else
                 if (_initialsize % AllocationGranularity != 0)
-                {
-                    _initialsize = (_initialsize + AllocationGranularity) & (~AllocationGranularity + 1);
-                }
+            {
+                _initialsize = (_initialsize + AllocationGranularity) & (~AllocationGranularity + 1);
+            }
             Clear();
         }
 
@@ -584,7 +584,7 @@ namespace MapFileDict
                 }
                 else
                 {
-                    int typeSize = 4;
+                    int typeSize = IntPtr.Size;
                     if (IsSimpleType(type, out typeSize))
                     {
                         clsInfo._simpleType = type;
@@ -628,7 +628,7 @@ namespace MapFileDict
                                 var fld = mem as FieldInfo;
                                 clsInfo._FieldInfo[i] = fld;
                                 clsInfo._offsets[i] = clsInfo._classOrArrayElemSize; // set offset to size calc'd so far
-                                int nTypeSize = 4;
+                                int nTypeSize = IntPtr.Size;
                                 if (IsSimpleType(fld.FieldType, out nTypeSize))
                                 {
                                     clsInfo._classOrArrayElemSize += nTypeSize;
@@ -717,22 +717,42 @@ namespace MapFileDict
         {
             var fIsSimple = false;
             nSize = 4;
-            switch (_type.Name)
+            if (_type.IsEnum)
             {
-                case "Int32":
-                case "UInt32":
-                case "IntPtr":
-                case "Boolean":
-                case "Single":
-                    fIsSimple = true;
-                    break;
-                case "UInt64":
-                case "Int64":
-                case "Double":
-                case "DateTime":
-                    nSize = 8;
-                    fIsSimple = true;
-                    break;
+                var enumunderlyingtype = _type.GetFields()[0].FieldType;
+                if (!IsSimpleType(enumunderlyingtype, out nSize))
+                {
+                    Debug.Assert(false);
+                }
+                fIsSimple = true;
+            }
+            else
+            {
+                switch (_type.Name)
+                {
+                    case "IntPtr":
+                        nSize = IntPtr.Size;
+                        fIsSimple = true;
+                        break;
+                    case "Int16":
+                    case "UInt16":
+                        nSize = 2;
+                        fIsSimple = true;
+                        break;
+                    case "Int32":
+                    case "UInt32":
+                    case "Boolean":
+                    case "Single":
+                        fIsSimple = true;
+                        break;
+                    case "UInt64":
+                    case "Int64":
+                    case "Double":
+                    case "DateTime":
+                        nSize = 8;
+                        fIsSimple = true;
+                        break;
+                }
             }
             return fIsSimple;
         }
@@ -758,6 +778,7 @@ namespace MapFileDict
             int nRecursionLevel = 0
             )
         {
+            Trace.WriteLine($"{nameof(AddData)}  {objToAdd} FldInfoCtr {fldInfoContainer?.FieldType.Name}   Recur {nRecursionLevel}");
             if (nRecursionLevel > 1000)
             {
                 throw new InvalidOperationException("Recursion depth");
@@ -985,7 +1006,7 @@ namespace MapFileDict
                                                 WriteARef(addr, 0); // no value for Lazy
                                             }
 
-                                        } 
+                                        }
                                         else if (fldInfo.FieldType.Name == "String")
                                         {
                                             if (val == null)
@@ -1107,79 +1128,99 @@ namespace MapFileDict
         private bool WriteTheType(object val, Type type, IntPtr addr, MemMapStream mapStream)
         {
             bool fHandled = true;
-            Byte[] bytes = null;
-            switch (type.Name)
+            if (type.IsEnum)
             {
-                case "Int32":
-                    Marshal.WriteInt32(addr, (int)val);
-                    break;
-                case "IntPtr":
-                    Debug.Assert(IntPtr.Size == 4, "assumes 32 bit");
-                    Marshal.WriteInt32(addr, ((IntPtr)val).ToInt32());
-                    break;
-                case "UInt32":
-                    // there's no WriteUint :(
-                    //   Marshal.WriteInt32(addr.MyAdd(_offsets[ndx]), val);
-                    bytes = BitConverter.GetBytes((uint)val);
-                    break;
-                case "UInt64":
-                    bytes = BitConverter.GetBytes((UInt64)val);
-                    break;
-                case "Int64":
-                    Marshal.WriteInt64(addr, (Int64)val);
-                    break;
-                case "Single":
-                    bytes = BitConverter.GetBytes((Single)val);
-                    break;
-                case "Double":
-                    bytes = BitConverter.GetBytes((double)val);
-                    break;
-                case "Boolean":
-                    Marshal.WriteInt32(addr, (bool)val ? 1 : 0);
-                    break;
-                //case "String":
-                //    var str = (string)val;
-                //    if (str == null)
-                //    {
-                //        WriteARef(addr, 0);
-                //    }
-                //    else
-                //    {
-                //        /*
-                //        var enc = new UnicodeEncoding();
-                //        mapStream.Write(enc.GetBytes(str), 0, str.Length * 2);
-                //        //var len = str.Length;
-                //        //var bytestr = new byte[len * 2];
-                //        //var xxx = enc.GetBytes(str, 0, len, bytestr, 0);
-                //        //mapStream.Write(bytestr, 0, bytestr.Length);
-                //        /*/
-                //        //                        mapStream.Position += str.Length * 2;
-                //        var bstr = Marshal.StringToBSTR(str);
-                //        NativeMethods.CopyMemory(addr, bstr, (uint)str.Length * 2);
-                //        Marshal.ZeroFreeBSTR(bstr);
-                //        //*/
-                //    }
-                //    break;
-                case "DateTime":
-                    //Marshal.StructureToPtr(dt, addr, fDeleteOld: false);
-                    Marshal.WriteInt64(addr, ((DateTime)val).Ticks);
-                    break;
-                default:
-                    fHandled = false;
-                    break;
+                var underlyingtype = type.GetFields()[0].FieldType;
+                fHandled = WriteTheType(val, underlyingtype, addr, mapStream);
             }
-            if (bytes != null)
+            else
             {
-                /*
-                mapStream.Position = addr.ToInt64();
-                mapStream.Write(bytes, 0, bytes.Length);
-                /*/
-
-                for (var i = 0; i < bytes.Length; i++)
+                Byte[] bytes = null;
+                switch (type.Name)
                 {
-                    Marshal.WriteByte(addr + i, bytes[i]);
+                    case "Int16":
+                        bytes = BitConverter.GetBytes((Int16)val);
+                        break;
+                    case "UInt16":
+                        bytes = BitConverter.GetBytes((UInt16)val);
+                        break;
+                    case "Int32":
+                        Marshal.WriteInt32(addr, (int)val);
+                        break;
+                    case "IntPtr":
+                        if (IntPtr.Size == 4)
+                        {
+                            Marshal.WriteInt32(addr, ((IntPtr)val).ToInt32());
+                        }
+                        else
+                        {
+                            Marshal.WriteInt64(addr, ((IntPtr)val).ToInt64());
+                        }
+                        break;
+                    case "UInt32":
+                        // there's no WriteUint :(
+                        //   Marshal.WriteInt32(addr.MyAdd(_offsets[ndx]), val);
+                        bytes = BitConverter.GetBytes((uint)val);
+                        break;
+                    case "UInt64":
+                        bytes = BitConverter.GetBytes((UInt64)val);
+                        break;
+                    case "Int64":
+                        Marshal.WriteInt64(addr, (Int64)val);
+                        break;
+                    case "Single":
+                        bytes = BitConverter.GetBytes((Single)val);
+                        break;
+                    case "Double":
+                        bytes = BitConverter.GetBytes((double)val);
+                        break;
+                    case "Boolean":
+                        Marshal.WriteInt32(addr, (bool)val ? 1 : 0);
+                        break;
+                    //case "String":
+                    //    var str = (string)val;
+                    //    if (str == null)
+                    //    {
+                    //        WriteARef(addr, 0);
+                    //    }
+                    //    else
+                    //    {
+                    //        /*
+                    //        var enc = new UnicodeEncoding();
+                    //        mapStream.Write(enc.GetBytes(str), 0, str.Length * 2);
+                    //        //var len = str.Length;
+                    //        //var bytestr = new byte[len * 2];
+                    //        //var xxx = enc.GetBytes(str, 0, len, bytestr, 0);
+                    //        //mapStream.Write(bytestr, 0, bytestr.Length);
+                    //        /*/
+                    //        //                        mapStream.Position += str.Length * 2;
+                    //        var bstr = Marshal.StringToBSTR(str);
+                    //        NativeMethods.CopyMemory(addr, bstr, (uint)str.Length * 2);
+                    //        Marshal.ZeroFreeBSTR(bstr);
+                    //        //*/
+                    //    }
+                    //    break;
+                    case "DateTime":
+                        //Marshal.StructureToPtr(dt, addr, fDeleteOld: false);
+                        Marshal.WriteInt64(addr, ((DateTime)val).Ticks);
+                        break;
+                    default:
+                        fHandled = false;
+                        break;
                 }
-                //*/
+                if (bytes != null)
+                {
+                    /*
+                    mapStream.Position = addr.ToInt64();
+                    mapStream.Write(bytes, 0, bytes.Length);
+                    /*/
+
+                    for (var i = 0; i < bytes.Length; i++)
+                    {
+                        Marshal.WriteByte(addr + i, bytes[i]);
+                    }
+                    //*/
+                }
             }
             return fHandled;
         }
@@ -1222,10 +1263,10 @@ namespace MapFileDict
             {
                 var b = new BinaryFormatter();
                 var mystream = new MemMapStream()
-                    {
-                        _mfloc = loc,
-                        _addrStart = addrStart
-                    };
+                {
+                    _mfloc = loc,
+                    _addrStart = addrStart
+                };
                 data = b.Deserialize(mystream);
             }
             else
@@ -1315,7 +1356,7 @@ namespace MapFileDict
                                 var castMeth = classIfnoLazy._type.GetMethod("Cast").MakeGenericMethod(classIfnoLazy._type);
                                 //var zz = castMeth.Invoke(null, new object[] { val });
                                 dynamic lazyvalue = Activator.CreateInstance(classIfnoLazy._type);
-                                
+
                                 lazyvalue._memMap = this;
                                 //lazyvalue._mfl = new MapFileLocator() { ulOffset = addrStart, ulSize = 2 };
 
@@ -1325,7 +1366,7 @@ namespace MapFileDict
                                 fldInfoContainer.SetValue(parentObj, null);
 
                             }
-                        } 
+                        }
                         else if (type.Name == "String")
                         {
                             if (fldInfoContainer == null) // not contained: so it's a raw string
@@ -1364,7 +1405,16 @@ namespace MapFileDict
                         }
                         else
                         {
-                            data = Activator.CreateInstance(type);
+                            var ctors = type.GetConstructors();
+                            if (ctors.Length > 0 && ctors[0].GetParameters().Length > 0)
+                            {
+                                data = Activator.CreateInstance(type, new object[] { "http://msn.com" });
+                            }
+                            else
+                            {
+                                data = Activator.CreateInstance(type);
+                            }
+
                             if (classInfo._simpleType != null)
                             {
                                 data = ReadSimpleType(addrStart, classInfo._simpleType);
@@ -1372,91 +1422,105 @@ namespace MapFileDict
                             else
                             {
                                 int ndx = 0;
-                                foreach (var fldInfo in classInfo._FieldInfo)
+                                foreach (var fldInfoRaw in classInfo._FieldInfo)
                                 {
                                     var addr = addrStart + classInfo._offsets[ndx];
-                                    switch (fldInfo.FieldType.Name)
+                                    void DoGetFld(string TypeName, FieldInfo fldInfo)
                                     {
-                                        case "UInt32":
-                                            {
-                                                var val = (UInt32)Marshal.ReadInt32(addr);
-                                                fldInfo.SetValue(data, val);
-                                            }
-                                            break;
-                                        case "Int32":
-                                            {
-                                                var val = Marshal.ReadInt32(addr);
-                                                fldInfo.SetValue(data, val);
-                                            }
-                                            break;
-                                        case "UInt64":
-                                            {
-                                                var val = (UInt64)Marshal.ReadInt32(addr);
-                                                fldInfo.SetValue(data, val);
-                                            }
-                                            break;
-                                        case "Int64":
-                                            {
-                                                var val = (Int64)Marshal.ReadInt64(addr);
-                                                fldInfo.SetValue(data, val);
-                                            }
-                                            break;
-                                        case "Single":
-                                            unsafe
-                                            {
-                                                Single val = 0;
-                                                byte* pBuff = (byte*)addr.ToPointer();
-                                                val = *(Single*)pBuff;
-                                                fldInfo.SetValue(data, val);
-                                            }
-                                            break;
-                                        case "Double":
-                                            unsafe
-                                            {
-                                                Double val = 0;
-                                                byte* pBuff = (byte*)addr.ToPointer();
-                                                val = *(Double*)pBuff;
-                                                fldInfo.SetValue(data, val);
-                                            }
-                                            break;
-                                        case "Boolean":
-                                            {
-                                                var val = Marshal.ReadInt32(addr);
-                                                fldInfo.SetValue(data, val == 0 ? false : true);
-                                            }
-                                            break;
-                                        case "DateTime":
-                                            {
-                                                var val = Marshal.ReadInt64(addr);
-                                                var dt = new DateTime(val);
-                                                fldInfo.SetValue(data, dt);
-                                            }
-                                            break;
-                                        default: //including strings
-                                            {
-                                                ulong mapIndex = (ulong)Marshal.ReadInt64(addr);
-                                                if (mapIndex == 0) // value is NULL
+                                        switch (TypeName)
+                                        {
+                                            case "UInt32":
                                                 {
-                                                    fldInfo.SetValue(data, null);
+                                                    var val = (UInt32)Marshal.ReadInt32(addr);
+                                                    fldInfo.SetValue(data, val);
                                                 }
-                                                else
+                                                break;
+                                            case "Int32":
                                                 {
-                                                    var locRefObj = _setCurAllocs[mapIndex];
-                                                    var fixup = new GetDataFixup()
+                                                    var val = Marshal.ReadInt32(addr);
+                                                    fldInfo.SetValue(data, val);
+                                                }
+                                                break;
+                                            case "UInt64":
+                                                {
+                                                    var val = (UInt64)Marshal.ReadInt32(addr);
+                                                    fldInfo.SetValue(data, val);
+                                                }
+                                                break;
+                                            case "Int64":
+                                                {
+                                                    var val = (Int64)Marshal.ReadInt64(addr);
+                                                    fldInfo.SetValue(data, val);
+                                                }
+                                                break;
+                                            case "Single":
+                                                unsafe
+                                                {
+                                                    Single val = 0;
+                                                    byte* pBuff = (byte*)addr.ToPointer();
+                                                    val = *(Single*)pBuff;
+                                                    fldInfo.SetValue(data, val);
+                                                }
+                                                break;
+                                            case "Double":
+                                                unsafe
+                                                {
+                                                    Double val = 0;
+                                                    byte* pBuff = (byte*)addr.ToPointer();
+                                                    val = *(Double*)pBuff;
+                                                    fldInfo.SetValue(data, val);
+                                                }
+                                                break;
+                                            case "Boolean":
+                                                {
+                                                    var val = Marshal.ReadInt32(addr);
+                                                    fldInfo.SetValue(data, val == 0 ? false : true);
+                                                }
+                                                break;
+                                            case "DateTime":
+                                                {
+                                                    var val = Marshal.ReadInt64(addr);
+                                                    var dt = new DateTime(val);
+                                                    fldInfo.SetValue(data, dt);
+                                                }
+                                                break;
+                                            default: //including strings
+                                                {
+                                                    ulong mapIndex = (ulong)Marshal.ReadInt64(addr);
+                                                    if (mapIndex == 0) // value is NULL
                                                     {
-                                                        _locReference = locRefObj,
-                                                        _fieldInfoFixup = fldInfo
-                                                    };
-                                                    if (fldInfo.FieldType.IsAbstract && !fldInfo.FieldType.IsInterface)
-                                                    {
-                                                        int hash = Marshal.ReadInt32(addr + _sizeofRef);
-                                                        fixup._type = _dictClassInfo.Values.Where(v => v._type.GetHashCode() == hash).Single()._type;
+                                                        fldInfo.SetValue(data, null);
                                                     }
-                                                    queFixup.Enqueue(fixup);
+                                                    else
+                                                    {
+                                                        var locRefObj = _setCurAllocs[mapIndex];
+                                                        var fixup = new GetDataFixup()
+                                                        {
+                                                            _locReference = locRefObj,
+                                                            _fieldInfoFixup = fldInfo
+                                                        };
+                                                        if (fldInfo.FieldType.IsAbstract && !fldInfo.FieldType.IsInterface)
+                                                        {
+                                                            int hash = Marshal.ReadInt32(addr + _sizeofRef);
+                                                            fixup._type = _dictClassInfo.Values.Where(v => v._type.GetHashCode() == hash).Single()._type;
+                                                        }
+                                                        queFixup.Enqueue(fixup);
+                                                    }
                                                 }
-                                            }
-                                            break;
+                                                break;
+                                        }
+
                                     }
+                                    if (fldInfoRaw.FieldType.IsEnum)
+                                    {
+                                        var underlyingfldType = fldInfoRaw.FieldType.GetFields()[0];
+                                        DoGetFld(underlyingfldType.FieldType.Name, fldInfoRaw);
+                                    }
+                                    else
+                                    {
+                                        DoGetFld(fldInfoRaw.FieldType.Name, fldInfoRaw);
+                                    }
+
                                     ndx++;
                                 }
                             }
@@ -1488,45 +1552,84 @@ namespace MapFileDict
         object ReadSimpleType(IntPtr addr, Type type)
         {
             object val = null;
-            switch (type.Name)
+            if (type.IsEnum)
             {
-                case "UInt32":
-                    val = (UInt32)Marshal.ReadInt32(addr);
-                    break;
-                case "Int32":
-                    val = Marshal.ReadInt32(addr);
-                    break;
-                case "IntPtr":
-                    val = Marshal.ReadInt32(addr);
-                    val = new IntPtr((int)val);
-                    break;
-                case "UInt64":
-                    val = (UInt64)Marshal.ReadInt32(addr);
-                    break;
-                case "Int64":
-                    val = (Int64)Marshal.ReadInt64(addr);
-                    break;
-                case "Boolean":
-                    val = Marshal.ReadInt32(addr);
-                    break;
-                case "Double":
-                    unsafe
+                if (IsSimpleType(type, out var nSize))
+                {
+                    switch (nSize)
                     {
-                        byte* pBytes = (byte*)addr.ToPointer();
-                        val = *(double*)pBytes;
+                        case 8:
+                            val = Marshal.ReadInt64(addr);
+                            break;
+                        case 4:
+                            val = Marshal.ReadInt32(addr);
+                            break;
+                        case 2:
+                            val = Marshal.ReadInt16(addr);
+                            break;
+                        case 1:
+                            val = Marshal.ReadByte(addr);
+                            break;
                     }
-                    break;
-                case "Single":
-                    unsafe
-                    {
-                        byte* pBuff = (byte*)addr.ToPointer();
-                        val = *(Single*)pBuff;
-                    }
-                    break;
-                case "DateTime":
-                    var ticks = (Int64)Marshal.ReadInt64(addr);
-                    val = new DateTime(ticks);
-                    break;
+                }
+
+            }
+            else
+            {
+                switch (type.Name)
+                {
+                    case "Int16":
+                        val = (Int16)Marshal.ReadInt16(addr);
+                        break;
+                    case "UInt16":
+                        val = (UInt16)Marshal.ReadInt16(addr);
+                        break;
+                    case "UInt32":
+                        val = (UInt32)Marshal.ReadInt32(addr);
+                        break;
+                    case "Int32":
+                        val = Marshal.ReadInt32(addr);
+                        break;
+                    case "IntPtr":
+                        if (IntPtr.Size == 4)
+                        {
+                            val = Marshal.ReadInt32(addr);
+                            val = new IntPtr((int)val);
+                        }
+                        else
+                        {
+                            val = Marshal.ReadInt64(addr);
+                            val = new IntPtr((Int64)val);
+                        }
+                        break;
+                    case "UInt64":
+                        val = (UInt64)Marshal.ReadInt32(addr);
+                        break;
+                    case "Int64":
+                        val = (Int64)Marshal.ReadInt64(addr);
+                        break;
+                    case "Boolean":
+                        val = Marshal.ReadInt32(addr);
+                        break;
+                    case "Double":
+                        unsafe
+                        {
+                            byte* pBytes = (byte*)addr.ToPointer();
+                            val = *(double*)pBytes;
+                        }
+                        break;
+                    case "Single":
+                        unsafe
+                        {
+                            byte* pBuff = (byte*)addr.ToPointer();
+                            val = *(Single*)pBuff;
+                        }
+                        break;
+                    case "DateTime":
+                        var ticks = (Int64)Marshal.ReadInt64(addr);
+                        val = new DateTime(ticks);
+                        break;
+                }
             }
             return val;
         }
