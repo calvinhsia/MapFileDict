@@ -15,10 +15,10 @@ namespace TestProject
         [Flags()]
         public enum TestMode
         {
-            UseFileRead = 1,
-            MapRegionOnly = 2,
-            MapRestOfFile = 4,
-            UseFixedRegion = 8
+            UseFileRead = 1, // Just use a FileStream and read the bytes. Very fast.
+            MapRegionOnly = 2, // Map a region the same size as the caller's request. This can be a very big region
+            MapRestOfFile = 4, // Map starting from the caller's requested offset to the rest of the file
+            UseFixedRegion = 8 // use a fixed size 64k region only
         }
         [MemoryDiagnoser]
         public class BenchTest
@@ -29,11 +29,13 @@ namespace TestProject
 
             [Benchmark]
             [Arguments(10L, 1000, TestMode.UseFileRead)]
-            [Arguments(10L, 1000000, TestMode.UseFileRead)]
             [Arguments(10L, 1000, TestMode.MapRegionOnly)]
             [Arguments(10L, 1000, TestMode.MapRestOfFile)]
+            [Arguments(10L, 1000, TestMode.UseFixedRegion)]
+            [Arguments(10L, 1000000, TestMode.UseFileRead)]
             [Arguments(10L, 1000000, TestMode.MapRegionOnly)]
             [Arguments(10L, 1000000, TestMode.MapRestOfFile)]
+            [Arguments(10L, 1000000, TestMode.UseFixedRegion)]
             public ReadOnlySpan<byte> MapBench(long offset, int size, TestMode testMode)
             {
                 if (testMode.HasFlag(TestMode.UseFileRead))
@@ -55,33 +57,31 @@ namespace TestProject
                             (Math.Min(FixedRegionSize, size)) :
                             size);
                     //        public const uint AllocationGranularity = 0x10000; //64k VirtualAlloc granularity for both 64 & 32 bit Windows systems
-                    MemoryMappedViewAccessor? mapView = null;
                     unsafe
                     {
-                        byte* ptr = null;
-                        try
+                        if (testMode.HasFlag(TestMode.UseFixedRegion)) // read the data in chunks of FixedRegionSize
                         {
                             var bytes = new byte[size];
-                            if (testMode.HasFlag(TestMode.UseFixedRegion)) // read the data in chunks of FixedRegionSize
+                            int BytesSoFar = 0;
+                            while (BytesSoFar < size)
                             {
-                                int BytesSoFar = 0;
-                                while (BytesSoFar < size)
-                                {
-                                    var countToRead = Math.Min(size - BytesSoFar, regionSize);// if there are fewer bytes to read than the region size
-                                    mapView = mappedFile.CreateViewAccessor(offset: offset, size: countToRead, MemoryMappedFileAccess.Read);
-                                    mapView.ReadArray<byte>(position: 0, // offset within accessor
-                                                            bytes,       // target array
-                                                            offset: BytesSoFar, // index into target array
-                                                            countToRead); // Count
-                                    BytesSoFar += regionSize;
-                                    mapView.Dispose();
-                                    mapView = null;
-                                    offset += regionSize;
-                                }
-                                var newspan = new ReadOnlySpan<byte>(bytes);
-                                return newspan;
+                                var numToRead = Math.Min(size - BytesSoFar, regionSize);// if there are fewer bytes to read than the region size
+                                using var mapView = mappedFile.CreateViewAccessor(offset: offset, size: numToRead, MemoryMappedFileAccess.Read);
+                                mapView.ReadArray<byte>(position: 0, // offset within accessor
+                                                        bytes,       // target array
+                                                        offset: BytesSoFar, // index into target array
+                                                        numToRead); // Count
+                                BytesSoFar += regionSize;
+                                offset += regionSize;
                             }
-                            else
+                            var newspan = new ReadOnlySpan<byte>(bytes);
+                            return newspan;
+                        }
+                        else
+                        {
+                            byte* ptr = null;
+                            MemoryMappedViewAccessor? mapView = null;
+                            try
                             {
                                 mapView = mappedFile.CreateViewAccessor(offset: offset, size: regionSize, MemoryMappedFileAccess.Read);
                                 // https://github.com/dotnet/runtime/blob/3689fbec921418e496962dc0ee252bdc9eafa3de/src/libraries/System.Private.CoreLib/src/System/Runtime/InteropServices/SafeBuffer.cs
@@ -93,14 +93,14 @@ namespace TestProject
                                 var newspan = new ReadOnlySpan<byte>(span.ToArray());
                                 return newspan;
                             }
-                        }
-                        finally
-                        {
-                            if (ptr != null)
+                            finally
                             {
-                                mapView?.SafeMemoryMappedViewHandle.ReleasePointer(); // must release pointer else leaks entire mapped section
+                                if (ptr != null)
+                                {
+                                    mapView?.SafeMemoryMappedViewHandle.ReleasePointer(); // must release pointer else leaks entire mapped section
+                                }
+                                mapView?.Dispose();
                             }
-                            mapView?.Dispose();
                         }
                     }
                 }
@@ -112,16 +112,17 @@ namespace TestProject
         {
             BenchmarkDotNet.Running.BenchmarkRunner.Run<BenchTest>();
             /*
-This is benchmarking regarding a particular way that a co-worker was using Memory MappedFiles.
-|   Method | offset |    size |      testMode |       Mean |    Error |    StdDev |     Median |     Gen0 |     Gen1 |     Gen2 |  Allocated |
-|--------- |------- |-------- |-------------- |-----------:|---------:|----------:|-----------:|---------:|---------:|---------:|-----------:|
-| MapBench |     10 |    1000 |   UseFileRead |   136.1 us |  3.73 us |  10.82 us |   135.4 us |   1.2207 |   0.4883 |        - |    5.25 KB |
-| MapBench |     10 |    1000 | MapRegionOnly |   239.9 us |  7.34 us |  21.30 us |   239.9 us |   0.4883 |        - |        - |    2.44 KB |
-| MapBench |     10 |    1000 | MapRestOfFile | 3,106.7 us | 66.05 us | 189.51 us | 3,128.7 us |        - |        - |        - |    2.44 KB |
-| MapBench |     10 | 1000000 |   UseFileRead |   534.1 us | 26.02 us |  76.72 us |   510.4 us | 195.3125 | 195.3125 | 195.3125 |  977.08 KB |
-| MapBench |     10 | 1000000 | MapRegionOnly | 2,211.1 us | 99.44 us | 293.19 us | 2,109.1 us | 328.1250 | 328.1250 | 328.1250 | 1955.52 KB |
-| MapBench |     10 | 1000000 | MapRestOfFile | 4,453.4 us | 99.26 us | 291.12 us | 4,459.8 us | 335.9375 | 335.9375 | 335.9375 | 1956.15 KB |
-             
+|   Method | offset |    size |       testMode |        Mean |     Error |     StdDev |     Gen0 |     Gen1 |     Gen2 | Allocated |
+|--------- |------- |-------- |--------------- |------------:|----------:|-----------:|---------:|---------:|---------:|----------:|
+| MapBench |     10 |    1000 |    UseFileRead |    53.80 us |  1.056 us |   1.216 us |   1.2817 |   0.6104 |        - |   5.25 KB |
+| MapBench |     10 |    1000 |  MapRegionOnly |   124.13 us |  2.436 us |   2.279 us |   0.2441 |        - |        - |   1.44 KB |
+| MapBench |     10 |    1000 |  MapRestOfFile | 1,028.19 us | 18.542 us |  22.771 us |        - |        - |        - |   1.44 KB |
+| MapBench |     10 |    1000 | UseFixedRegion |   127.07 us |  2.395 us |   2.240 us |   0.2441 |        - |        - |   1.44 KB |
+| MapBench |     10 | 1000000 |    UseFileRead |   255.96 us |  4.800 us |   9.475 us | 186.5234 | 186.0352 | 186.0352 | 977.28 KB |
+| MapBench |     10 | 1000000 |  MapRegionOnly |   878.93 us | 13.424 us |  11.900 us | 200.1953 | 200.1953 | 200.1953 | 977.08 KB |
+| MapBench |     10 | 1000000 |  MapRestOfFile | 1,837.38 us | 35.032 us |  38.938 us | 199.2188 | 199.2188 | 199.2188 | 977.08 KB |
+| MapBench |     10 | 1000000 | UseFixedRegion | 3,857.94 us | 75.808 us | 126.658 us | 199.2188 | 199.2188 | 199.2188 | 980.45 KB |
+
              */
         }
 
